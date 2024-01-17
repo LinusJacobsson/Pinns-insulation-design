@@ -14,9 +14,9 @@ from dataclasses import dataclass
 
 @dataclass
 class HarmonicConfig:
-    m = 10
-    mu = 5
-    k = 10
+    m = 1
+    mu = 4
+    k = 400
     initial_x = 1
     initial_v = 0
     amplitude = 1
@@ -47,7 +47,7 @@ class PINN(nn.Module):
         return x
 
 
-def model_loss(params, apply_fn, inputs, omega, initial_displacement, initial_velocity):
+def model_loss(params, apply_fn, t, y, omega, initial_displacement, initial_velocity):
     def displacement(t):
         t_reshaped = t.reshape(-1, 1)  # Reshape to (batch_size, num_features)
         return apply_fn(params, t_reshaped)
@@ -60,78 +60,70 @@ def model_loss(params, apply_fn, inputs, omega, initial_displacement, initial_ve
         return grad(lambda t: dx_dt)(t)
 
     # Vectorize the second derivative computation
-    d2x_dt2 = vmap(second_derivative)(inputs[:, 0])
+    d2x_dt2 = vmap(second_derivative)(t[:, 0])
 
     # Differential equation loss
-    pred_displacement = displacement(inputs)
-    eq_loss = jnp.mean((d2x_dt2 + omega**2 * pred_displacement[:, 0] + 1)**2)
+    pred_displacement = displacement(t)
+    eq_loss = jnp.mean((d2x_dt2 + omega**2 * pred_displacement[:, 0])**2)
 
     # Initial conditions loss
     ic_loss_displacement = (displacement(jnp.array([[0.]]))[0, 0] - initial_displacement) ** 2
     ic_loss_velocity = (grad(lambda t: displacement(jnp.array([[t]]))[0, 0])(0.0) - initial_velocity) ** 2
 
-
-    return eq_loss + ic_loss_displacement + ic_loss_velocity
+    data_loss = jnp.mean((pred_displacement - y)**2)
+    return eq_loss + ic_loss_displacement + ic_loss_velocity + data_loss
 
 
 @jax.jit
-def train_step(state, inputs, omega, initial_displacement, initial_velocity):
+def train_step(state, t, y, omega, initial_displacement, initial_velocity):
     def loss_fn(params):
         # Use the apply function from the state object
-        return model_loss(params, state.apply_fn, inputs, omega, initial_displacement, initial_velocity)
+        return model_loss(params, state.apply_fn, t, y, omega, initial_displacement, initial_velocity)
 
     grad_fn = jax.value_and_grad(loss_fn)
     loss, grads = grad_fn(state.params)
     state = state.apply_gradients(grads=grads)
     return state, loss
 
-
-# Initialize model and optimizer
-model = PINN()
-rng = random.PRNGKey(0)
-params = model.init(rng, jnp.array([[0.]]))
-tx = optax.adam(learning_rate=0.001)
-state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
-
-
-omega = 1
-initial_x = -2.0
-initial_v = 1.0
-
-t = np.linspace(0, 10, 100)
-y = analytical_solution(t)
-t_samples = t[::5]
-y_samples = y[::5]
-
-plt.figure()
-plt.plot(t, y, label="Exact solution")
-plt.scatter(t_samples, y_samples, color="tab:orange", label="Training data")
-plt.legend()
-plt.show()
-
 def main():
-    for epoch in range(1000):
-        state, loss = train_step(state, t_samples, omega, initial_x, initial_v)  # Removed 'model' from here
-        if epoch % 100 == 0:
+        # Initialize model and optimizer
+    model = PINN()
+    rng = random.PRNGKey(0)
+    params = model.init(rng, jnp.array([[0.]]))
+    tx = optax.adam(learning_rate=0.001)
+    state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
+
+
+    omega = 20
+    initial_x = 1.0
+    initial_v = 0
+
+    t = np.linspace(0, 1, 1000).reshape(-1, 1)
+    y = analytical_solution(t)
+    t_samples = np.concatenate([t[0:400:2], t[600:1000:2]])
+    y_samples = np.concatenate([y[0:400:2], y[600:1000:2]])
+
+    plt.figure()
+    plt.plot(t, y, label="Exact solution")
+    plt.scatter(t_samples, y_samples, color="tab:orange", label="Training data")
+    plt.legend()
+    plt.show()
+    t_samples.reshape(-1, 1)
+
+    for epoch in range(10000):
+        state, loss = train_step(state, t_samples, y_samples, omega, initial_x, initial_v)
+        if epoch % 1000 == 0:
             print(f"Epoch {epoch}, Loss: {loss}")
 
 
     predict_fn = jax.jit(lambda t: model.apply(state.params, t))
-    predicted_displacement = vmap(predict_fn)(t_samples)
-
+    predicted_displacement = vmap(predict_fn)(t)
     plt.figure(figsize=(10, 4))
-
     # Plotting the predicted displacement
-    plt.plot(t, predicted_displacement, label='Predicted Displacement by PINN')
-
+    plt.plot(t[:,], predicted_displacement, label='Predicted Displacement by PINN')
     # Plotting the true solution
-    plt.plot(t, analytical_solution(t), label='True Solution', linestyle='dashed')
-
-    # Adding collocation points on the plot
-    # Assume `predicted_displacement_at_collocation` is the predicted displacement at collocation points
-    #predicted_displacement_at_collocation = vmap(predict_fn)(collocation)
-    #plt.scatter(collocation, predicted_displacement_at_collocation, color='red', s=10, label='Collocation Points')
-
+    plt.plot(t[:, ], analytical_solution(t), label='True Solution', linestyle='dashed')
+    plt.scatter(t_samples[:,], y_samples[:,], color = 'r', marker = '*')
     plt.xlabel('Time')
     plt.ylabel('Displacement')
     plt.title('Learned Simple Harmonic Oscillator vs True Solution')
