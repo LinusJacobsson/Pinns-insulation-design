@@ -45,3 +45,17 @@ def model_loss(params, apply_fn, inputs, omega, initial_displacement, initial_ve
 
 
     return eq_loss + ic_loss_displacement + ic_loss_velocity
+
+
+@jax.jit
+def train_step(state, inputs, omega, initial_displacement, initial_velocity):
+    def loss_fn(params):
+        # Use the apply function from the state object
+        return model_loss(params, state.apply_fn, inputs, omega, initial_displacement, initial_velocity)
+
+    grad_fn = jax.value_and_grad(loss_fn)
+    loss, grads = grad_fn(state.params)
+    state = state.apply_gradients(grads=grads)
+    return state, loss
+
+
