@@ -20,17 +20,19 @@ class HarmonicConfig:
     initial_x = 1
     initial_v = 0
     amplitude = 1
+    train = True
+
 
 # Hardcoded for initial_x = 1, initial_v = 0
-def analytical_solution(m, mu, k, t):
+def analytical_solution(t, m = HarmonicConfig.m, mu = HarmonicConfig.mu, k = HarmonicConfig.k):
     delta = mu/(2*m)
     omega_0 = np.sqrt(k/m)
     assert delta < omega_0
     omega = np.sqrt(omega_0**2 - delta**2)
-    phi =  np.arctan(-d/w)
+    phi =  np.arctan(-delta/omega)
     A = 1/(2*np.cos(phi))
     cos = np.cos(phi + omega*t)
-    exp = np.exp(-d*t)
+    exp = np.exp(-delta*t)
     return 2*A*exp*cos
 
 
@@ -91,44 +93,51 @@ params = model.init(rng, jnp.array([[0.]]))
 tx = optax.adam(learning_rate=0.001)
 state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
 
-# Training data
-times = jnp.linspace(0, 10, 1000).reshape(-1, 1)
-collocation = times[::30]
 
 omega = 1
 initial_x = -2.0
 initial_v = 1.0
 
-# Training loop
+t = np.linspace(0, 10, 100)
+y = analytical_solution(t)
+t_samples = t[::5]
+y_samples = y[::5]
 
-for epoch in range(1000):
-    state, loss = train_step(state, collocation, omega, initial_x, initial_v)  # Removed 'model' from here
-    if epoch % 100 == 0:
-        print(f"Epoch {epoch}, Loss: {loss}")
-
-
-predict_fn = jax.jit(lambda t: model.apply(state.params, t))
-predicted_displacement = vmap(predict_fn)(collocation)
-
-true_solution = initial_x * np.cos(omega * times) + initial_x * np.sin(omega * times)
-print(f" True solution list: {true_solution}")
-plt.figure(figsize=(10, 4))
-
-# Plotting the predicted displacement
-plt.plot(collocation, predicted_displacement, label='Predicted Displacement by PINN')
-
-# Plotting the true solution
-plt.plot(times, true_solution, label='True Solution', linestyle='dashed')
-
-# Adding collocation points on the plot
-# Assume `predicted_displacement_at_collocation` is the predicted displacement at collocation points
-predicted_displacement_at_collocation = vmap(predict_fn)(collocation)
-plt.scatter(collocation, predicted_displacement_at_collocation, color='red', s=10, label='Collocation Points')
-
-plt.xlabel('Time')
-plt.ylabel('Displacement')
-plt.title('Learned Simple Harmonic Oscillator vs True Solution')
+plt.figure()
+plt.plot(t, y, label="Exact solution")
+plt.scatter(t_samples, y_samples, color="tab:orange", label="Training data")
 plt.legend()
-plt.grid(True)
 plt.show()
 
+def main():
+    for epoch in range(1000):
+        state, loss = train_step(state, t_samples, omega, initial_x, initial_v)  # Removed 'model' from here
+        if epoch % 100 == 0:
+            print(f"Epoch {epoch}, Loss: {loss}")
+
+
+    predict_fn = jax.jit(lambda t: model.apply(state.params, t))
+    predicted_displacement = vmap(predict_fn)(t_samples)
+
+    plt.figure(figsize=(10, 4))
+
+    # Plotting the predicted displacement
+    plt.plot(t, predicted_displacement, label='Predicted Displacement by PINN')
+
+    # Plotting the true solution
+    plt.plot(t, analytical_solution(t), label='True Solution', linestyle='dashed')
+
+    # Adding collocation points on the plot
+    # Assume `predicted_displacement_at_collocation` is the predicted displacement at collocation points
+    #predicted_displacement_at_collocation = vmap(predict_fn)(collocation)
+    #plt.scatter(collocation, predicted_displacement_at_collocation, color='red', s=10, label='Collocation Points')
+
+    plt.xlabel('Time')
+    plt.ylabel('Displacement')
+    plt.title('Learned Simple Harmonic Oscillator vs True Solution')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+if HarmonicConfig.train:
+    main()
