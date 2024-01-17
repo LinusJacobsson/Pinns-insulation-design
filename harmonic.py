@@ -19,7 +19,20 @@ class HarmonicConfig:
     k = 10
     initial_x = 1
     initial_v = 0
-    
+    amplitude = 1
+
+# Hardcoded for initial_x = 1, initial_v = 0
+def analytical_solution(m, mu, k, t):
+    delta = mu/(2*m)
+    omega_0 = np.sqrt(k/m)
+    assert delta < omega_0
+    omega = np.sqrt(omega_0**2 - delta**2)
+    phi =  np.arctan(-d/w)
+    A = 1/(2*np.cos(phi))
+    cos = np.cos(phi + omega*t)
+    exp = np.exp(-d*t)
+    return 2*A*exp*cos
+
 
 class PINN(nn.Module):
     @nn.compact
