@@ -20,3 +20,28 @@ class PINN(nn.Module):
         return x
 
 
+def model_loss(params, apply_fn, inputs, omega, initial_displacement, initial_velocity):
+    def displacement(t):
+        t_reshaped = t.reshape(-1, 1)  # Reshape to (batch_size, num_features)
+        return apply_fn(params, t_reshaped)
+
+    # Compute the second derivative for each input point individually
+    def second_derivative(t):
+        # First derivative
+        dx_dt = grad(lambda t: displacement(jnp.array([t]))[0, 0])(t)
+        # Second derivative
+        return grad(lambda t: dx_dt)(t)
+
+    # Vectorize the second derivative computation
+    d2x_dt2 = vmap(second_derivative)(inputs[:, 0])
+
+    # Differential equation loss
+    pred_displacement = displacement(inputs)
+    eq_loss = jnp.mean((d2x_dt2 + omega**2 * pred_displacement[:, 0])**2)
+
+    # Initial conditions loss
+    ic_loss_displacement = (displacement(jnp.array([[0.]]))[0, 0] - initial_displacement) ** 2
+    ic_loss_velocity = (grad(lambda t: displacement(jnp.array([[t]]))[0, 0])(0.0) - initial_velocity) ** 2
+
+
+    return eq_loss + ic_loss_displacement + ic_loss_velocity
