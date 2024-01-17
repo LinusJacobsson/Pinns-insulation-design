@@ -35,7 +35,7 @@ def analytical_solution(t, m = HarmonicConfig.m, mu = HarmonicConfig.mu, k = Har
     exp = np.exp(-delta*t)
     return 2*A*exp*cos
 
-class FCNFlax(nn.Module):
+class PINN(nn.Module):
     num_inputs: int
     num_outputs: int
     num_hidden: int
@@ -56,43 +56,37 @@ class FCNFlax(nn.Module):
         x = nn.Dense(self.num_outputs)(x)
         return x
 
-def model_loss(params, apply_fn, t, y, omega, initial_displacement, initial_velocity):
+def model_loss(params, apply_fn, t_samples, y_samples, t_physics, omega, initial_displacement, initial_velocity):
     def displacement(t):
-        t_reshaped = t.reshape(-1, 1)  # Reshape to (batch_size, num_features)
+        t_reshaped = t.reshape(-1, 1)
         return apply_fn(params, t_reshaped)
 
-    # Compute the second derivative for each input point individually
     def second_derivative(t):
-        # First derivative
         dx_dt = grad(lambda t: displacement(jnp.array([t]))[0, 0])(t)
-        # Second derivative
         return grad(lambda t: dx_dt)(t)
-    
-    def first_derivative(t):
-        return grad(lambda t: displacement(jnp.array([t]))[0, 0])(t)
 
-    dx_dt = vmap(first_derivative)(t[:, 0])
-    # Vectorize the second derivative computation
-    d2x_dt2 = vmap(second_derivative)(t[:, 0])
+    # Use t_physics for the equation loss
+    d2x_dt2_physics = vmap(second_derivative)(t_physics[:, 0])
+    pred_displacement_physics = displacement(t_physics)
+    eq_loss = jnp.mean((d2x_dt2_physics + omega**2 * pred_displacement_physics[:, 0])**2)
 
-    # Differential equation loss
-    pred_displacement = displacement(t)
-    #eq_loss = jnp.mean((d2x_dt2 + omega**2 * pred_displacement[:, 0] + dx_dt)**2)
-    eq_loss = jnp.mean((d2x_dt2/HarmonicConfig.k + (HarmonicConfig.mu/HarmonicConfig.k)*dx_dt + pred_displacement[:, 0]) ** 2)
-    #eq_loss = 0
-    # Initial conditions loss
+    # Use t_samples and y_samples for the data loss
+    pred_displacement_data = displacement(t_samples)
+    data_loss = jnp.mean((pred_displacement_data - y_samples)**2)
+
+    # Initial conditions loss (can use t_samples[0] if it starts from t=0)
     ic_loss_displacement = (displacement(jnp.array([[0.]]))[0, 0] - initial_displacement) ** 2
     ic_loss_velocity = (grad(lambda t: displacement(jnp.array([[t]]))[0, 0])(0.0) - initial_velocity) ** 2
-    data_loss = jnp.mean((pred_displacement - y)**2)
-    
+
     total_loss = eq_loss + ic_loss_displacement + ic_loss_velocity + data_loss
     return total_loss, eq_loss, ic_loss_displacement, ic_loss_velocity, data_loss
 
 
+
 @jax.jit
-def train_step(state, t, y, omega, initial_displacement, initial_velocity):
+def train_step(state, t_samples, y_samples, t_physics, omega, initial_displacement, initial_velocity):
     def loss_fn(params):
-        total_loss, _, _, _, _ = model_loss(params, state.apply_fn, t, y, omega, initial_displacement, initial_velocity)
+        total_loss, _, _, _, _ = model_loss(params, state.apply_fn, t_samples, y_samples, t_physics, omega, initial_displacement, initial_velocity)
         return total_loss
 
     grad_fn = jax.value_and_grad(loss_fn)
@@ -102,7 +96,7 @@ def train_step(state, t, y, omega, initial_displacement, initial_velocity):
 
 def main():
         # Initialize model and optimizer
-    model = PINN()
+    model = PINN(num_inputs=1, num_outputs=1, num_hidden=8, num_layers=3)
     rng = random.PRNGKey(0)
     params = model.init(rng, jnp.array([[0.]]))
     tx = optax.adam(learning_rate=0.001)
@@ -119,6 +113,8 @@ def main():
     #y_samples = np.concatenate([y[0:200:2], y[800:1000:2]])
     t_samples = t[0:200:20]
     y_samples = y[0:200:20]
+    t_physics = np.linspace(0, 1, 30).reshape(-1, 1)
+
 
 
     plt.figure()
@@ -128,11 +124,12 @@ def main():
     plt.show()
     t_samples.reshape(-1, 1)
 
-    for epoch in range(10000):
-        state, _ = train_step(state, t_samples, y_samples, omega, initial_x, initial_v)
+    for epoch in range(2000):
+        state, _ = train_step(state, t_samples, y_samples, t_physics, omega, initial_x, initial_v)
         if epoch % 1000 == 0:
-            _, eq_loss, ic_loss_disp, ic_loss_vel, data_loss = model_loss(state.params, model.apply, t_samples, y_samples, omega, initial_x, initial_v)
+            _, eq_loss, ic_loss_disp, ic_loss_vel, data_loss = model_loss(state.params, model.apply, t_samples, y_samples, t_physics, omega, initial_x, initial_v)
             print(f"Epoch {epoch}, Equation Loss: {eq_loss}, IC Loss Displacement: {ic_loss_disp}, IC Loss Velocity: {ic_loss_vel}, Data Loss: {data_loss}")
+
 
 
 
