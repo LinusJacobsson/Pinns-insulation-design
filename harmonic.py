@@ -59,3 +59,24 @@ def train_step(state, inputs, omega, initial_displacement, initial_velocity):
     return state, loss
 
 
+# Initialize model and optimizer
+model = PINN()
+rng = random.PRNGKey(0)
+params = model.init(rng, jnp.array([[0.]]))
+tx = optax.adam(learning_rate=0.001)
+state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
+
+# Training data
+times = jnp.linspace(0, 10, 1000).reshape(-1, 1)
+collocation = times[::30]
+
+omega = 1.0
+initial_x = -2.0
+initial_v = 0.0
+
+# Training loop
+
+for epoch in range(10000):
+    state, loss = train_step(state, collocation, omega, initial_x, initial_v)  # Removed 'model' from here
+    if epoch % 1000 == 0:
+        print(f"Epoch {epoch}, Loss: {loss}")
