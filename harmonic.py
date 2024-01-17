@@ -15,8 +15,8 @@ from jax import debug
 @dataclass
 class HarmonicConfig:
     m = 1
-    mu = 1
-    k = 1
+    mu = 4
+    k = 400
     initial_x = 1
     initial_v = 0
     amplitude = 1
@@ -35,17 +35,26 @@ def analytical_solution(t, m = HarmonicConfig.m, mu = HarmonicConfig.mu, k = Har
     exp = np.exp(-delta*t)
     return 2*A*exp*cos
 
+class FCNFlax(nn.Module):
+    num_inputs: int
+    num_outputs: int
+    num_hidden: int
+    num_layers: int
 
-class PINN(nn.Module):
     @nn.compact
-    def __call__(self, t):
-        x = nn.Dense(200)(t)
+    def __call__(self, x):
+        # Input layer
+        x = nn.Dense(self.num_hidden)(x)
         x = nn.tanh(x)
-        x = nn.Dense(200)(x)
-        x = nn.tanh(x)
-        x = nn.Dense(1)(x)
+        
+        # Hidden layers
+        for _ in range(self.num_layers - 1):
+            x = nn.Dense(self.num_hidden)(x)
+            x = nn.tanh(x)
+        
+        # Output layer
+        x = nn.Dense(self.num_outputs)(x)
         return x
-
 
 def model_loss(params, apply_fn, t, y, omega, initial_displacement, initial_velocity):
     def displacement(t):
@@ -58,18 +67,22 @@ def model_loss(params, apply_fn, t, y, omega, initial_displacement, initial_velo
         dx_dt = grad(lambda t: displacement(jnp.array([t]))[0, 0])(t)
         # Second derivative
         return grad(lambda t: dx_dt)(t)
+    
+    def first_derivative(t):
+        return grad(lambda t: displacement(jnp.array([t]))[0, 0])(t)
 
+    dx_dt = vmap(first_derivative)(t[:, 0])
     # Vectorize the second derivative computation
     d2x_dt2 = vmap(second_derivative)(t[:, 0])
 
     # Differential equation loss
     pred_displacement = displacement(t)
-    eq_loss = jnp.mean((d2x_dt2 + omega**2 * pred_displacement[:, 0])**2)
-
+    #eq_loss = jnp.mean((d2x_dt2 + omega**2 * pred_displacement[:, 0] + dx_dt)**2)
+    eq_loss = jnp.mean((d2x_dt2/HarmonicConfig.k + (HarmonicConfig.mu/HarmonicConfig.k)*dx_dt + pred_displacement[:, 0]) ** 2)
+    #eq_loss = 0
     # Initial conditions loss
     ic_loss_displacement = (displacement(jnp.array([[0.]]))[0, 0] - initial_displacement) ** 2
     ic_loss_velocity = (grad(lambda t: displacement(jnp.array([[t]]))[0, 0])(0.0) - initial_velocity) ** 2
-
     data_loss = jnp.mean((pred_displacement - y)**2)
     
     total_loss = eq_loss + ic_loss_displacement + ic_loss_velocity + data_loss
@@ -100,10 +113,13 @@ def main():
     initial_x = 1.0
     initial_v = 0
 
-    t = np.linspace(0, 20, 1000).reshape(-1, 1)
+    t = np.linspace(0, 1, 500).reshape(-1, 1)
     y = analytical_solution(t)
-    t_samples = np.concatenate([t[0:200:2], t[800:1000:2]])
-    y_samples = np.concatenate([y[0:200:2], y[800:1000:2]])
+    #t_samples = np.concatenate([t[0:200:2], t[800:1000:2]])
+    #y_samples = np.concatenate([y[0:200:2], y[800:1000:2]])
+    t_samples = t[0:200:20]
+    y_samples = y[0:200:20]
+
 
     plt.figure()
     plt.plot(t, y, label="Exact solution")
