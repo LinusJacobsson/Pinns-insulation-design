@@ -9,14 +9,14 @@ import optax
 import matplotlib.pyplot as plt
 import numpy as np
 from dataclasses import dataclass
-
+from jax import debug
 
 
 @dataclass
 class HarmonicConfig:
     m = 1
-    mu = 4
-    k = 400
+    mu = 1
+    k = 1
     initial_x = 1
     initial_v = 0
     amplitude = 1
@@ -71,14 +71,16 @@ def model_loss(params, apply_fn, t, y, omega, initial_displacement, initial_velo
     ic_loss_velocity = (grad(lambda t: displacement(jnp.array([[t]]))[0, 0])(0.0) - initial_velocity) ** 2
 
     data_loss = jnp.mean((pred_displacement - y)**2)
-    return eq_loss + ic_loss_displacement + ic_loss_velocity + data_loss
+    
+    total_loss = eq_loss + ic_loss_displacement + ic_loss_velocity + data_loss
+    return total_loss, eq_loss, ic_loss_displacement, ic_loss_velocity, data_loss
 
 
 @jax.jit
 def train_step(state, t, y, omega, initial_displacement, initial_velocity):
     def loss_fn(params):
-        # Use the apply function from the state object
-        return model_loss(params, state.apply_fn, t, y, omega, initial_displacement, initial_velocity)
+        total_loss, _, _, _, _ = model_loss(params, state.apply_fn, t, y, omega, initial_displacement, initial_velocity)
+        return total_loss
 
     grad_fn = jax.value_and_grad(loss_fn)
     loss, grads = grad_fn(state.params)
@@ -94,14 +96,14 @@ def main():
     state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
 
 
-    omega = 20
+    omega = 1
     initial_x = 1.0
     initial_v = 0
 
-    t = np.linspace(0, 1, 1000).reshape(-1, 1)
+    t = np.linspace(0, 20, 1000).reshape(-1, 1)
     y = analytical_solution(t)
-    t_samples = np.concatenate([t[0:400:2], t[600:1000:2]])
-    y_samples = np.concatenate([y[0:400:2], y[600:1000:2]])
+    t_samples = np.concatenate([t[0:200:2], t[800:1000:2]])
+    y_samples = np.concatenate([y[0:200:2], y[800:1000:2]])
 
     plt.figure()
     plt.plot(t, y, label="Exact solution")
@@ -111,9 +113,11 @@ def main():
     t_samples.reshape(-1, 1)
 
     for epoch in range(10000):
-        state, loss = train_step(state, t_samples, y_samples, omega, initial_x, initial_v)
+        state, _ = train_step(state, t_samples, y_samples, omega, initial_x, initial_v)
         if epoch % 1000 == 0:
-            print(f"Epoch {epoch}, Loss: {loss}")
+            _, eq_loss, ic_loss_disp, ic_loss_vel, data_loss = model_loss(state.params, model.apply, t_samples, y_samples, omega, initial_x, initial_v)
+            print(f"Epoch {epoch}, Equation Loss: {eq_loss}, IC Loss Displacement: {ic_loss_disp}, IC Loss Velocity: {ic_loss_vel}, Data Loss: {data_loss}")
+
 
 
     predict_fn = jax.jit(lambda t: model.apply(state.params, t))
