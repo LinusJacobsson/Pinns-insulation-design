@@ -80,3 +80,31 @@ for epoch in range(10000):
     state, loss = train_step(state, collocation, omega, initial_x, initial_v)  # Removed 'model' from here
     if epoch % 1000 == 0:
         print(f"Epoch {epoch}, Loss: {loss}")
+
+
+
+predict_fn = jax.jit(lambda t: model.apply(state.params, t))
+predicted_displacement = vmap(predict_fn)(collocation)
+
+true_solution = initial_x * np.cos(omega * times)
+
+plt.figure(figsize=(10, 4))
+
+# Plotting the predicted displacement
+plt.plot(collocation, predicted_displacement, label='Predicted Displacement by PINN')
+
+# Plotting the true solution
+plt.plot(times, true_solution, label='True Solution', linestyle='dashed')
+
+# Adding collocation points on the plot
+# Assume `predicted_displacement_at_collocation` is the predicted displacement at collocation points
+predicted_displacement_at_collocation = vmap(predict_fn)(collocation)
+plt.scatter(collocation, predicted_displacement_at_collocation, color='red', s=10, label='Collocation Points')
+
+plt.xlabel('Time')
+plt.ylabel('Displacement')
+plt.title('Learned Simple Harmonic Oscillator vs True Solution')
+plt.legend('top right')
+plt.grid(True)
+plt.show()
+
