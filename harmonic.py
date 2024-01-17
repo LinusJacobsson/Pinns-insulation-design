@@ -8,6 +8,18 @@ from flax.training import train_state
 import optax
 import matplotlib.pyplot as plt
 import numpy as np
+from dataclasses import dataclass
+
+
+
+@dataclass
+class HarmonicConfig:
+    m = 10
+    mu = 5
+    k = 10
+    initial_x = 1
+    initial_v = 0
+    
 
 class PINN(nn.Module):
     @nn.compact
@@ -37,7 +49,7 @@ def model_loss(params, apply_fn, inputs, omega, initial_displacement, initial_ve
 
     # Differential equation loss
     pred_displacement = displacement(inputs)
-    eq_loss = jnp.mean((d2x_dt2 + omega**2 * pred_displacement[:, 0])**2)
+    eq_loss = jnp.mean((d2x_dt2 + omega**2 * pred_displacement[:, 0] + 1)**2)
 
     # Initial conditions loss
     ic_loss_displacement = (displacement(jnp.array([[0.]]))[0, 0] - initial_displacement) ** 2
@@ -70,24 +82,23 @@ state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx
 times = jnp.linspace(0, 10, 1000).reshape(-1, 1)
 collocation = times[::30]
 
-omega = 1.0
+omega = 1
 initial_x = -2.0
-initial_v = 0.0
+initial_v = 1.0
 
 # Training loop
 
-for epoch in range(10000):
+for epoch in range(1000):
     state, loss = train_step(state, collocation, omega, initial_x, initial_v)  # Removed 'model' from here
-    if epoch % 1000 == 0:
+    if epoch % 100 == 0:
         print(f"Epoch {epoch}, Loss: {loss}")
-
 
 
 predict_fn = jax.jit(lambda t: model.apply(state.params, t))
 predicted_displacement = vmap(predict_fn)(collocation)
 
-true_solution = initial_x * np.cos(omega * times)
-
+true_solution = initial_x * np.cos(omega * times) + initial_x * np.sin(omega * times)
+print(f" True solution list: {true_solution}")
 plt.figure(figsize=(10, 4))
 
 # Plotting the predicted displacement
@@ -104,7 +115,7 @@ plt.scatter(collocation, predicted_displacement_at_collocation, color='red', s=1
 plt.xlabel('Time')
 plt.ylabel('Displacement')
 plt.title('Learned Simple Harmonic Oscillator vs True Solution')
-plt.legend('top right')
+plt.legend()
 plt.grid(True)
 plt.show()
 
