@@ -16,26 +16,29 @@ from IPython.display import clear_output
 
 @dataclass
 class HarmonicConfig:
-    m = 1
-    mu = 4
-    k = 400
-    initial_x = 1
+    m = 1.5
+    mu = 0
+    k = 1.5
+    initial_x = -2
     initial_v = 0
     amplitude = 1
     train = True
 
 
-# Hardcoded for initial_x = 1, initial_v = 0
-def analytical_solution(t, m = HarmonicConfig.m, mu = HarmonicConfig.mu, k = HarmonicConfig.k):
-    delta = mu/(2*m)
-    omega_0 = np.sqrt(k/m)
-    assert delta < omega_0
+def analytical_solution(t, m, mu, k, initial_x, initial_v):
+    delta = mu / (2 * m)
+    omega_0 = np.sqrt(k / m)
     omega = np.sqrt(omega_0**2 - delta**2)
-    phi =  np.arctan(-delta/omega)
-    A = 1/(2*np.cos(phi))
-    cos = np.cos(phi + omega*t)
-    exp = np.exp(-delta*t)
-    return 2*A*exp*cos
+
+    A = initial_x
+    B = (initial_v + delta * initial_x) / omega
+
+    exp_term = np.exp(-delta * t)
+    cos_term = np.cos(omega * t)
+    sin_term = np.sin(omega * t)
+
+    return exp_term * (A * cos_term + B * sin_term)
+
 
 class PINN(nn.Module):
     num_inputs: int
@@ -63,30 +66,35 @@ def model_loss(params, apply_fn, t_samples, y_samples, t_physics, omega, initial
         t_reshaped = t.reshape(-1, 1)
         return apply_fn(params, t_reshaped)
     
+
     def first_derivative(t):
         return grad(lambda t: displacement(jnp.array([t]))[0, 0])(t)
+
 
     def second_derivative(t):
         dx_dt = grad(lambda t: displacement(jnp.array([t]))[0, 0])(t)
         return grad(lambda t: dx_dt)(t)
     
 
-    # Use t_physics for the equation loss
-    dx_dt = vmap(first_derivative)(t_physics[:, 0])
-    d2x_dt2_physics = vmap(second_derivative)(t_physics[:, 0])
-    pred_displacement_physics = displacement(t_physics)
-    eq_loss = jnp.mean((d2x_dt2_physics/HarmonicConfig.k + (HarmonicConfig.mu/HarmonicConfig.k)*dx_dt + pred_displacement_physics[:, 0])**2)
-    eq_loss = 0
-    # Use t_samples and y_samples for the data loss
+    def eq_loss(t_physics):
+        dx_dt = vmap(first_derivative)(t_physics[:, 0])
+        d2x_dt2_physics = vmap(second_derivative)(t_physics[:, 0])
+        pred_displacement_physics = displacement(t_physics)
+        return jnp.mean((d2x_dt2_physics/HarmonicConfig.k + (HarmonicConfig.mu/HarmonicConfig.k)*dx_dt + pred_displacement_physics[:, 0])**2)
+
+
+  
+
     pred_displacement_data = displacement(t_samples)
     data_loss = jnp.mean((pred_displacement_data - y_samples)**2)
+
 
     # Initial conditions loss (can use t_samples[0] if it starts from t=0)
     ic_loss_displacement = (displacement(jnp.array([[0.]]))[0, 0] - initial_displacement) ** 2
     ic_loss_velocity = (grad(lambda t: displacement(jnp.array([[t]]))[0, 0])(0.0) - initial_velocity) ** 2
-
-    total_loss = 50*eq_loss + ic_loss_displacement + ic_loss_velocity + 10*data_loss
-    return total_loss, eq_loss, ic_loss_displacement, ic_loss_velocity, data_loss
+    pde_loss = eq_loss(t_physics)
+    total_loss = pde_loss + ic_loss_displacement + ic_loss_velocity + data_loss
+    return total_loss, pde_loss, ic_loss_displacement, ic_loss_velocity, data_loss
 
 
 
@@ -111,10 +119,10 @@ def main():
 
 
     omega = 20
-    initial_x = 1.0
+    initial_x = -2
     initial_v = 0
 
-    t = np.linspace(0, 1, 100).reshape(-1, 1)
+    t = np.linspace(0, 8, 100).reshape(-1, 1)
     y = analytical_solution(t)
     #t_samples = np.concatenate([t[0:200:2], t[800:1000:2]])
     #y_samples = np.concatenate([y[0:200:2], y[800:1000:2]])
