@@ -42,9 +42,9 @@ class PINN(nn.Module):
     num_outputs: int
     num_hidden: int
     num_layers: int
-    m: float  # mass
-    mu: float  # damping coefficient
-    k: float  # spring constant
+    m: float  # initial guess for mass
+    mu: float  # initial guesss for damping coefficient
+    k: float  # initial guess for spring constant
 
     @nn.compact
     def __call__(self, x):
@@ -59,9 +59,20 @@ class PINN(nn.Module):
         
         # Output layer
         x = nn.Dense(self.num_outputs)(x)
-        return x
+
+        # Trainable physical parameters
+        m = self.param('m', nn.initializers.constant(self.m), ())
+        mu = self.param('mu', nn.initializers.constant(self.mu), ())
+        k = self.param('k', nn.initializers.constant(self.k), ())
+
+        return x, m, mu, k
+
 
 def model_loss(params, apply_fn, t_samples, y_samples, t_physics, omega, initial_displacement, initial_velocity):
+
+    # Unpack trainable parameters from the model
+    _, m, mu, k = apply_fn(params, jnp.zeros((1, 1)))
+
     def displacement(t):
         t_reshaped = t.reshape(-1, 1)
         return apply_fn(params, t_reshaped)
@@ -77,7 +88,7 @@ def model_loss(params, apply_fn, t_samples, y_samples, t_physics, omega, initial
     dx_dt = vmap(first_derivative)(t_physics[:, 0])
     d2x_dt2_physics = vmap(second_derivative)(t_physics[:, 0])
     pred_displacement_physics = displacement(t_physics)
-    eq_loss = jnp.mean((HarmonicConfig.m*d2x_dt2_physics/HarmonicConfig.k + (HarmonicConfig.mu/HarmonicConfig.k)*dx_dt + pred_displacement_physics[:, 0])**2)
+    eq_loss = jnp.mean((m*d2x_dt2_physics + mu*dx_dt + k*pred_displacement_physics[:, 0])**2)
     #eq_loss = 0
     # Use t_samples and y_samples for the data loss
     pred_displacement_data = displacement(t_samples)
@@ -105,7 +116,7 @@ def train_step(state, t_samples, y_samples, t_physics, omega, initial_displaceme
 
 def main():
         # Initialize model and optimizer
-    model = PINN(num_inputs=1, num_outputs=1, num_hidden=8, num_layers=3)
+    model = PINN(num_inputs=1, num_outputs=1, num_hidden=8, num_layers=3, m=10.0, mu=10.0, k=100.0)
     rng = random.PRNGKey(0)
     params = model.init(rng, jnp.array([[0.]]))
     tx = optax.adam(learning_rate=0.001)
@@ -138,7 +149,9 @@ def main():
         if epoch % 1000 == 0:
             _, eq_loss, ic_loss_disp, ic_loss_vel, data_loss = model_loss(state.params, model.apply, t_samples, y_samples, t_physics, omega, initial_x, initial_v)
             print(f"Epoch {epoch}, Equation Loss: {eq_loss}, IC Loss Displacement: {ic_loss_disp}, IC Loss Velocity: {ic_loss_vel}, Data Loss: {data_loss}")
-
+            # Unpack and print the physical parameters
+            _, m, mu, k = model.apply(state.params, jnp.zeros((1, 1)))
+            print(f"Epoch {epoch}, m: {m}, mu: {mu}, k: {k}, Loss: {_}")
 
     predict_fn = jax.jit(lambda t: model.apply(state.params, t))
     predicted_displacement = vmap(predict_fn)(t)
