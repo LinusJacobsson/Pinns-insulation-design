@@ -84,7 +84,7 @@ def model_loss(params, apply_fn, t_samples, y_samples, t_physics, omega, initial
     ic_loss_displacement = (displacement(jnp.array([[0.]]))[0, 0] - initial_displacement) ** 2
     ic_loss_velocity = (grad(lambda t: displacement(jnp.array([[t]]))[0, 0])(0.0) - initial_velocity) ** 2
 
-    total_loss = eq_loss + ic_loss_displacement + ic_loss_velocity + 100*data_loss
+    total_loss = eq_loss + ic_loss_displacement + ic_loss_velocity + 10*data_loss
     return total_loss, eq_loss, ic_loss_displacement, ic_loss_velocity, data_loss
 
 
@@ -117,9 +117,9 @@ def main():
     y = analytical_solution(t)
     #t_samples = np.concatenate([t[0:200:2], t[800:1000:2]])
     #y_samples = np.concatenate([y[0:200:2], y[800:1000:2]])
-    t_samples = t[0:100:5]
-    y_samples = y[0:100:5]
-    t_physics = np.linspace(0, 1, 50).reshape(-1, 1)
+    t_samples = t[0:50:5]
+    y_samples = y[0:50:5]
+    t_physics = np.linspace(0, 1, 20).reshape(-1, 1)
 
 
 
@@ -139,18 +139,27 @@ def main():
 
     predict_fn = jax.jit(lambda t: model.apply(state.params, t))
     predicted_displacement = vmap(predict_fn)(t)
-    plt.figure(figsize=(10, 4))
+    
+
     # Plotting the predicted displacement
-    plt.plot(t[:,], predicted_displacement, label='Predicted Displacement by PINN')
+    plt.plot(t[:, 0], predicted_displacement, label='Predicted Displacement by PINN')
+    
     # Plotting the true solution
-    plt.plot(t[:, ], analytical_solution(t), label='True Solution', linestyle='dashed')
-    plt.scatter(t_samples[:,], y_samples[:,], color = 'r', marker = '*')
+    plt.plot(t[:, 0], analytical_solution(t), label='True Solution', linestyle='dashed')
+    
+    # Plotting the data loss points
+    plt.scatter(t_samples[:, 0], y_samples[:, 0], color='r', marker='o', label='Data Loss Points')
+
+    # Plotting the physics loss points at y=0 (on the x-axis)
+    plt.scatter(t_physics[:, 0], np.zeros_like(t_physics[:, 0]), color='b', marker='.', label='Physics Loss Points')
+
     plt.xlabel('Time')
     plt.ylabel('Displacement')
     plt.title('Learned Simple Harmonic Oscillator vs True Solution')
     plt.legend()
     plt.grid(True)
     plt.show()
+
 
 if HarmonicConfig.train:
     main()
