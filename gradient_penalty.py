@@ -25,20 +25,17 @@ class HarmonicConfig:
     train = True
 
 
-def analytical_solution(t, m, mu, k, initial_x, initial_v):
-    delta = mu / (2 * m)
-    omega_0 = np.sqrt(k / m)
+# Hardcoded for initial_x = 1, initial_v = 0
+def analytical_solution(t, m = HarmonicConfig.m, mu = HarmonicConfig.mu, k = HarmonicConfig.k):
+    delta = mu/(2*m)
+    omega_0 = np.sqrt(k/m)
+    assert delta < omega_0
     omega = np.sqrt(omega_0**2 - delta**2)
-
-    A = initial_x
-    B = (initial_v + delta * initial_x) / omega
-
-    exp_term = np.exp(-delta * t)
-    cos_term = np.cos(omega * t)
-    sin_term = np.sin(omega * t)
-
-    return exp_term * (A * cos_term + B * sin_term)
-
+    phi =  np.arctan(-delta/omega)
+    A = 1/(2*np.cos(phi))
+    cos = np.cos(phi + omega*t)
+    exp = np.exp(-delta*t)
+    return 2*A*exp*cos
 
 class PINN(nn.Module):
     num_inputs: int
@@ -66,33 +63,53 @@ def model_loss(params, apply_fn, t_samples, y_samples, t_physics, omega, initial
         t_reshaped = t.reshape(-1, 1)
         return apply_fn(params, t_reshaped)
     
-
     def first_derivative(t):
         return grad(lambda t: displacement(jnp.array([t]))[0, 0])(t)
-
 
     def second_derivative(t):
         dx_dt = grad(lambda t: displacement(jnp.array([t]))[0, 0])(t)
         return grad(lambda t: dx_dt)(t)
-    
 
-    def eq_loss(t_physics):
-        d2x_dt2_physics = vmap(second_derivative)(t_physics[:, 0])
-        pred_displacement_physics = displacement(t_physics)
-        return jnp.mean((HarmonicConfig.m * d2x_dt2_physics  + HarmonicConfig.k*pred_displacement_physics[:, 0])**2)
-
-
+    # Use t_physics for the equation loss
+    dx_dt = vmap(first_derivative)(t_physics[:, 0])
+    d2x_dt2_physics = vmap(second_derivative)(t_physics[:, 0])
+    pred_displacement_physics = displacement(t_physics)
+    eq_loss = jnp.mean((HarmonicConfig.m*d2x_dt2_physics/HarmonicConfig.k + (HarmonicConfig.mu/HarmonicConfig.k)*dx_dt + pred_displacement_physics[:, 0])**2)
+    #eq_loss = 0
+    # Use t_samples and y_samples for the data loss
     pred_displacement_data = displacement(t_samples)
     data_loss = jnp.mean((pred_displacement_data - y_samples)**2)
-    
-  
+
     # Initial conditions loss (can use t_samples[0] if it starts from t=0)
     ic_loss_displacement = (displacement(jnp.array([[0.]]))[0, 0] - initial_displacement) ** 2
     ic_loss_velocity = (grad(lambda t: displacement(jnp.array([[t]]))[0, 0])(0.0) - initial_velocity) ** 2
-    pde_loss = eq_loss(t_physics)
 
-    total_loss = pde_loss + ic_loss_displacement + ic_loss_velocity 
-    return total_loss, pde_loss, ic_loss_displacement, ic_loss_velocity, data_loss
+    total_loss = eq_loss + ic_loss_displacement + ic_loss_velocity + 10*data_loss
+    return total_loss, eq_loss, ic_loss_displacement, ic_loss_velocity, data_loss
+
+def pde_residual_gradient(t, apply_fn, params):
+    # Gradient of the PDE residual
+    grad_pde_residual = grad(lambda t: pde_residual(t, apply_fn, params))
+    # Vectorize the gradient computation over t
+    return vmap(grad_pde_residual)(t)
+
+
+def pde_residual(t, apply_fn, params):
+    # Reshape t to a 2D array for displacement computation
+    t_reshaped = jnp.array([t])
+    displacement_val = apply_fn(params, t_reshaped)[0, 0]
+    d2x_dt2 = second_derivative(t[0], apply_fn, params)
+    residual = HarmonicConfig.m * d2x_dt2 + HarmonicConfig.k * displacement_val
+    return residual
+
+def second_derivative(t, apply_fn, params):
+    def displacement_scalar(t_scalar):
+        t_array = jnp.array([[t_scalar]])
+        return apply_fn(params, t_array)[0, 0]
+
+    dx_dt = grad(displacement_scalar)(t)
+    d2x_dt2 = grad(lambda t: dx_dt)(t)
+    return d2x_dt2
 
 
 
@@ -116,16 +133,17 @@ def main():
     state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
 
 
-    omega = 20
-    initial_x = -2
+    omega = 1
+    initial_x = -2.0
     initial_v = 0
 
-    t = np.linspace(0, 8, 1000).reshape(-1, 1)
-    y = analytical_solution(t, HarmonicConfig.m, HarmonicConfig.mu, HarmonicConfig.k, HarmonicConfig.initial_x, HarmonicConfig.initial_v)    #t_samples = np.concatenate([t[0:200:2], t[800:1000:2]])
+    t = np.linspace(0, 8, 100).reshape(-1, 1)
+    y = analytical_solution(t)
+    #t_samples = np.concatenate([t[0:200:2], t[800:1000:2]])
     #y_samples = np.concatenate([y[0:200:2], y[800:1000:2]])
-    t_samples = t[0:500:5]
-    y_samples = y[0:500:5]
-    t_physics = np.linspace(0, 8, 100).reshape(-1, 1)
+    t_samples = t[0:50:5]
+    y_samples = y[0:50:5]
+    t_physics = np.linspace(0, 8, 20).reshape(-1, 1)
 
 
 
@@ -140,30 +158,35 @@ def main():
         state, _ = train_step(state, t_samples, y_samples, t_physics, omega, initial_x, initial_v)
         if epoch % 1000 == 0:
             _, eq_loss, ic_loss_disp, ic_loss_vel, data_loss = model_loss(state.params, model.apply, t_samples, y_samples, t_physics, omega, initial_x, initial_v)
-            print(f"Epoch {epoch:.2}, Equation Loss: {eq_loss:.2}, IC Loss Displacement: {ic_loss_disp:.2}, IC Loss Velocity: {ic_loss_vel:.2}, Data Loss: {data_loss:.2}")
+            print(f"Epoch {epoch:.2f}, Equation Loss: {eq_loss:.2f}, IC Loss Displacement: {ic_loss_disp:.2f}, IC Loss Velocity: {ic_loss_vel:.2f}, Data Loss: {data_loss:.2f}")
 
+    pde_gradients = pde_residual_gradient(t_physics, model.apply, state.params)
 
     predict_fn = jax.jit(lambda t: model.apply(state.params, t))
     predicted_displacement = vmap(predict_fn)(t)
     
 
-    # Plotting the predicted displacement
-    plt.plot(t[:, 0], predicted_displacement, label='Predicted Displacement by PINN')
-    
-    # Plotting the true solution
-    plt.plot(t[:, 0], analytical_solution(t, HarmonicConfig.m, HarmonicConfig.mu, HarmonicConfig.k, HarmonicConfig.initial_x, HarmonicConfig.initial_v), label='True Solution', linestyle='dashed')
-    
-    # Plotting the data loss points
-    plt.scatter(t_samples[:, 0], y_samples[:, 0], color='r', marker='o', label='Data Loss Points')
+    # Plotting results
+    fig, ax1 = plt.subplots()
 
-    # Plotting the physics loss points at y=0 (on the x-axis)
-    plt.scatter(t_physics[:, 0], np.zeros_like(t_physics[:, 0]), color='b', marker='.', label='Physics Loss Points')
+    # Displacement plot
+    ax1.set_xlabel('Time')
+    ax1.set_ylabel('Displacement')
+    ax1.plot(t[:, 0], predicted_displacement, label='Predicted Displacement by PINN')
+    ax1.plot(t[:, 0], analytical_solution(t), label='True Solution', linestyle='dashed')
+    ax1.scatter(t_samples[:, 0], y_samples[:, 0], color='r', marker='o', label='Data Points')
+    ax1.legend()
+    ax1.set_ylim(-4, 4)
+    ax1.grid(True)
 
-    plt.xlabel('Time')
-    plt.ylabel('Displacement')
-    plt.title('Learned Simple Harmonic Oscillator vs True Solution')
-    plt.legend()
-    plt.grid(True)
+    # Create a twin axis for the gradient plot
+    ax2 = ax1.twinx()
+    ax2.set_ylabel('PDE Residual Gradient', color='tab:purple')
+    ax2.plot(t_physics[:, 0], pde_gradients, color='tab:purple', label='PDE Residual Gradient', linestyle=':')
+    ax2.tick_params(axis='y', labelcolor='tab:purple')
+
+    fig.tight_layout()
+    plt.title('Learned Simple Harmonic Oscillator and PDE Residual Gradient')
     plt.show()
 
 
