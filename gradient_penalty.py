@@ -77,23 +77,21 @@ def model_loss(params, apply_fn, t_samples, y_samples, t_physics, omega, initial
     
 
     def eq_loss(t_physics):
-        dx_dt = vmap(first_derivative)(t_physics[:, 0])
         d2x_dt2_physics = vmap(second_derivative)(t_physics[:, 0])
         pred_displacement_physics = displacement(t_physics)
-        return jnp.mean((d2x_dt2_physics/HarmonicConfig.k + (HarmonicConfig.mu/HarmonicConfig.k)*dx_dt + pred_displacement_physics[:, 0])**2)
+        return jnp.mean((HarmonicConfig.m * d2x_dt2_physics  + HarmonicConfig.k*pred_displacement_physics[:, 0])**2)
 
-
-  
 
     pred_displacement_data = displacement(t_samples)
     data_loss = jnp.mean((pred_displacement_data - y_samples)**2)
-
-
+    
+  
     # Initial conditions loss (can use t_samples[0] if it starts from t=0)
     ic_loss_displacement = (displacement(jnp.array([[0.]]))[0, 0] - initial_displacement) ** 2
     ic_loss_velocity = (grad(lambda t: displacement(jnp.array([[t]]))[0, 0])(0.0) - initial_velocity) ** 2
     pde_loss = eq_loss(t_physics)
-    total_loss = pde_loss + ic_loss_displacement + ic_loss_velocity + data_loss
+
+    total_loss = pde_loss + ic_loss_displacement + ic_loss_velocity 
     return total_loss, pde_loss, ic_loss_displacement, ic_loss_velocity, data_loss
 
 
@@ -122,13 +120,12 @@ def main():
     initial_x = -2
     initial_v = 0
 
-    t = np.linspace(0, 8, 100).reshape(-1, 1)
-    y = analytical_solution(t)
-    #t_samples = np.concatenate([t[0:200:2], t[800:1000:2]])
+    t = np.linspace(0, 8, 1000).reshape(-1, 1)
+    y = analytical_solution(t, HarmonicConfig.m, HarmonicConfig.mu, HarmonicConfig.k, HarmonicConfig.initial_x, HarmonicConfig.initial_v)    #t_samples = np.concatenate([t[0:200:2], t[800:1000:2]])
     #y_samples = np.concatenate([y[0:200:2], y[800:1000:2]])
-    t_samples = t[0:50:5]
-    y_samples = y[0:50:5]
-    t_physics = np.linspace(0, 1, 20).reshape(-1, 1)
+    t_samples = t[0:500:5]
+    y_samples = y[0:500:5]
+    t_physics = np.linspace(0, 8, 100).reshape(-1, 1)
 
 
 
@@ -143,7 +140,7 @@ def main():
         state, _ = train_step(state, t_samples, y_samples, t_physics, omega, initial_x, initial_v)
         if epoch % 1000 == 0:
             _, eq_loss, ic_loss_disp, ic_loss_vel, data_loss = model_loss(state.params, model.apply, t_samples, y_samples, t_physics, omega, initial_x, initial_v)
-            print(f"Epoch {epoch}, Equation Loss: {eq_loss}, IC Loss Displacement: {ic_loss_disp}, IC Loss Velocity: {ic_loss_vel}, Data Loss: {data_loss}")
+            print(f"Epoch {epoch:.2}, Equation Loss: {eq_loss:.2}, IC Loss Displacement: {ic_loss_disp:.2}, IC Loss Velocity: {ic_loss_vel:.2}, Data Loss: {data_loss:.2}")
 
 
     predict_fn = jax.jit(lambda t: model.apply(state.params, t))
@@ -154,7 +151,7 @@ def main():
     plt.plot(t[:, 0], predicted_displacement, label='Predicted Displacement by PINN')
     
     # Plotting the true solution
-    plt.plot(t[:, 0], analytical_solution(t), label='True Solution', linestyle='dashed')
+    plt.plot(t[:, 0], analytical_solution(t, HarmonicConfig.m, HarmonicConfig.mu, HarmonicConfig.k, HarmonicConfig.initial_x, HarmonicConfig.initial_v), label='True Solution', linestyle='dashed')
     
     # Plotting the data loss points
     plt.scatter(t_samples[:, 0], y_samples[:, 0], color='r', marker='o', label='Data Loss Points')
