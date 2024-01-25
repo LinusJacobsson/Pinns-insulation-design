@@ -41,7 +41,7 @@ def analytical_solution(t, x_0, v_0, m, mu, k):
 
 
 # N = 200 funkar ej, N = 100 gör det bra
-def generate_dataset(N=100, noise_percent=0.0, seed=420, x_0 = -2, v_0 = 0, m = 1.0, mu = 0, k = 4.0):
+def generate_dataset(N=100, noise_percent=0.0, seed=420, x_0 = -2, v_0 = 0, m = 1.0, mu = 1.0, k = 4.0):
     # seed key for debugging
     np.random.seed(seed)
 
@@ -68,16 +68,16 @@ class MLP(nn.Module):
     # Custom uniform initializer for mu
     #mu_init: Callable = lambda key, shape: jax.random.uniform(key, shape, minval=1.0, maxval=10.0)
     # Constant value initializer for k
-    #m_init: Callable = lambda key, shape: jnp.full(shape, 5.0)
-    #mu_init: Callable = lambda key, shape: jnp.full(shape, 5.0)
+    m_init: Callable = jax.nn.initializers.ones
+    mu_init: Callable = jax.nn.initializers.ones
     k_init: Callable = jax.nn.initializers.ones
 
     def setup(self):
         # include the omega parameter during setup
         #m = self.param("m", self.m_init, (1,))
         #mu = self.param("mu", self.mu_init, (1,))
-        #m = self.param("m", self.m_init, (1,))
-        #mu = self.param("mu", self.mu_init, (1,))
+        m = self.param("m", self.m_init, (1,))
+        mu = self.param("mu", self.mu_init, (1,))
         k = self.param("k", self.k_init, (1,))
 
         self.layers = [nn.Dense(features=feat, use_bias=True) for feat in self.features]
@@ -98,7 +98,7 @@ def MSE(true, pred):
 def PINN_f(t, m, mu, k, ufunc):
     u_t = lambda t: jax.grad(lambda t: jnp.sum(ufunc(t)))(t)
     u_tt = lambda t: jax.grad(lambda t: jnp.sum(u_t(t)))(t)
-    return u_tt(t) + k * ufunc(t)  # Corrected to omega**2 as per the SHO equation
+    return u_tt(t) + (mu/m)*u_t(t) + (k/m)*ufunc(t)  # Corrected to omega**2 as per the SHO equation
     
 
 @jax.jit
@@ -112,14 +112,14 @@ def loss_fun(params, data, x_0, v_0):
     ufunc = lambda t: uNN(params, t)
    
     # Assuming m and mu are fixed and known, using 1 for simplicity
-    #m = params["params"]["m"]
-    #mu = params["params"]["mu"]
+    m = params["params"]["m"]
+    mu = params["params"]["mu"]
     k = params["params"]["k"]
 
     mse_u = MSE(u_c, ufunc(t_c))
-    mse_f = jnp.mean(PINN_f(t_c, 1, 0, k, ufunc)**2)
+    mse_f = jnp.mean(PINN_f(t_c, m, 0, k, ufunc)**2)
 
-    total_loss = mse_f + 1000*mse_u
+    total_loss = mse_f + 10*mse_u
     # Combine losses
     return total_loss, mse_f, mse_u
 
@@ -143,13 +143,13 @@ def init_process(feats):
     dummy_in = jax.random.normal(key1, (1,))
     params = model.init(key2, dummy_in)
 
-    lr = optax.piecewise_constant_schedule(1e-2,{50_000:5e-3,80_000:1e-3})
+    lr = optax.piecewise_constant_schedule(1e-2,{75_000:5e-3,90_000:1e-3})
     optimizer = optax.adam(lr)
     opt_state = optimizer.init(params)
     
     return model, params, optimizer, opt_state
 
-features = [16, 16, 16, 16, 1]
+features = [32, 32, 1]
 
 model, params, optimizer, opt_state = init_process(features)
 
@@ -157,41 +157,35 @@ t_c, u_c = data[:, [0]], data[:, [1]]
 ufunc = lambda t: uNN(params, t)
 x_0 = -2
 v_0 = 0
-epochs = 10000
+epochs = 100000
 for epoch in range(epochs):
     opt_state, params = update(opt_state, params, data, x_0, v_0)
     total_loss, mse_f_loss, mse_u_loss = loss_fun(params, data, x_0, v_0)
     
-    #current_m = params["params"]["m"][0]
-    #current_mu = params["params"]["mu"][0]
-    current_k = params["params"]["k"][0]
-
-
-    # Assuming m and mu are fixed and known, using 1 for simplicity
-    #k = params["params"]["k"]
-    #mse_f = jnp.mean(PINN_f(t_c, 1, 1, k, ufunc)**2)
-    #print(f"Current equation loss: {mse_f:.4f}")
-    if epoch % 1000 == 0:
+    if epoch % 10000 == 0:
+        current_m = params["params"]["m"][0]
+        current_mu = params["params"]["mu"][0]
+        current_k = params["params"]["k"][0]
         print(f'Epoch = {epoch}, Total Loss = {total_loss:.3e}, MSE_F = {mse_f_loss:.3e}, '
-              f'MSE_U = {mse_u_loss:.3e}, k = {current_k:.3f}')
+              f'MSE_U = {mse_u_loss:.3e}, m  = {current_m:.3f}, k = {current_k:.3f}')
 
 
-#m_calc = params["params"]["m"][0]
-#mu_calc = params["params"]["mu"][0]
+m_calc = params["params"]["m"][0]
+mu_calc = params["params"]["mu"][0]
 k_calc = params["params"]["k"][0]
 
 m = 1.0
-mu = 0
+mu = 1.0
 k = 4.0
 
-"""print(f"The real value of the parameter is m = {m}")
+print(f"The real value of the parameter is m = {m}")
 print(f"The calculated value for the parameter is m_calc = {m_calc:.7f}.")
 print(f"This corresponds to a {100*(m_calc-m)/m:.5f}% error.")
 
-print(f"The real value of the parameter is mu = {mu}")
+print(f"The real value of the parameter is mu/m = {mu}")
 print(f"The calculated value for the parameter is mu_calc = {mu_calc:.7f}.")
 print(f"This corresponds to a {100*(mu_calc-mu)/mu:.5f}% error.")
-"""
+
 print(f"The real value of the parameter is k = {k}")
 print(f"The calculated value for the parameter is k_calc = {k_calc:.7f}.")
 print(f"This corresponds to a {100*(k_calc-k)/k:.5f}% error.")
