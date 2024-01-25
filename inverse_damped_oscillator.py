@@ -149,7 +149,7 @@ def init_process(feats):
     
     return model, params, optimizer, opt_state
 
-features = [32, 32, 1]
+features = [16, 16, 16, 16, 16, 16, 1]
 
 model, params, optimizer, opt_state = init_process(features)
 
@@ -157,7 +157,7 @@ t_c, u_c = data[:, [0]], data[:, [1]]
 ufunc = lambda t: uNN(params, t)
 x_0 = -2
 v_0 = 0
-epochs = 100000
+epochs = 50000
 for epoch in range(epochs):
     opt_state, params = update(opt_state, params, data, x_0, v_0)
     total_loss, mse_f_loss, mse_u_loss = loss_fun(params, data, x_0, v_0)
@@ -167,7 +167,7 @@ for epoch in range(epochs):
         current_mu = params["params"]["mu"][0]
         current_k = params["params"]["k"][0]
         print(f'Epoch = {epoch}, Total Loss = {total_loss:.3e}, MSE_F = {mse_f_loss:.3e}, '
-              f'MSE_U = {mse_u_loss:.3e}, m  = {current_m:.3f}, k = {current_k:.3f}')
+              f'MSE_U = {mse_u_loss:.3e}, m  = {current_m:.3f}, mu = {current_mu:.3f}, k = {current_k:.3f}')
 
 
 m_calc = params["params"]["m"][0]
