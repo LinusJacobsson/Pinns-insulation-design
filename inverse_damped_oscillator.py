@@ -162,7 +162,7 @@ for epoch in range(epochs):
     opt_state, params = update(opt_state, params, data, x_0, v_0)
     total_loss, mse_f_loss, mse_u_loss = loss_fun(params, data, x_0, v_0)
     
-    if epoch % 10000 == 0:
+    if epoch % 1000 == 0:
         current_m = params["params"]["m"][0]
         current_mu = params["params"]["mu"][0]
         current_k = params["params"]["k"][0]
