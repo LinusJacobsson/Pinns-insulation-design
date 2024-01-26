@@ -98,7 +98,7 @@ def MSE(true, pred):
 def PINN_f(t, m, mu, k, ufunc):
     u_t = lambda t: jax.grad(lambda t: jnp.sum(ufunc(t)))(t)
     u_tt = lambda t: jax.grad(lambda t: jnp.sum(u_t(t)))(t)
-    return u_tt(t) + (mu/m)*u_t(t) + (k/m)*ufunc(t)  # Corrected to omega**2 as per the SHO equation
+    return u_tt(t) + (mu)*u_t(t) + (k/m)*ufunc(t)  # Corrected to omega**2 as per the SHO equation
     
 
 @jax.jit
@@ -119,7 +119,7 @@ def loss_fun(params, data, x_0, v_0):
     mse_u = MSE(u_c, ufunc(t_c))
     mse_f = jnp.mean(PINN_f(t_c, m, 0, k, ufunc)**2)
 
-    total_loss = mse_f + 10*mse_u
+    total_loss = mse_f + 100*mse_u
     # Combine losses
     return total_loss, mse_f, mse_u
 
@@ -149,7 +149,7 @@ def init_process(feats):
     
     return model, params, optimizer, opt_state
 
-features = [16, 16, 16, 16, 16, 16, 1]
+features = [128, 128, 1]
 
 model, params, optimizer, opt_state = init_process(features)
 
@@ -157,7 +157,7 @@ t_c, u_c = data[:, [0]], data[:, [1]]
 ufunc = lambda t: uNN(params, t)
 x_0 = -2
 v_0 = 0
-epochs = 50000
+epochs = 100000
 for epoch in range(epochs):
     opt_state, params = update(opt_state, params, data, x_0, v_0)
     total_loss, mse_f_loss, mse_u_loss = loss_fun(params, data, x_0, v_0)
