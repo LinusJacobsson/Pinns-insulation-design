@@ -110,29 +110,39 @@ def uNN(params, x):
     return u
 
 
-def loss_fun(params, data):
+def loss_fun(params, data, xmin, xmax, U_0, U_1):
     """
     Calculate the loss function for the neural network training.
 
     Args:
         params (dict): Parameters of the neural network.
-        data (array_like): Training data.
+        data (array_like): Collocation points for differential equation.
+        xmin (float): Minimum boundary point.
+        xmax (float): Maximum boundary point.
+        U_0 (float): Solution value at xmin.
+        U_1 (float): Solution value at xmax.
 
     Returns:
         float: Computed loss value.
     """
-    x_c, u_c = data[:, [0]], data[:, [1]]
+    x_c, _ = data[:, [0]], data[:, [1]]
     ufunc = lambda x: uNN(params, x)
 
-    omega = params["params"]["omega"]  # Retrieve the omega parameter
-    
-    mse_u = MSE(u_c, ufunc(x_c)) # data loss
-    mse_f = jnp.mean(PINN_f(x_c, ufunc) ** 2) # diff eq. loss
+    # Differential equation loss
+    mse_f = jnp.mean(PINN_f(x_c, ufunc) ** 2)
 
-    return mse_f   #+#mse_u
+    # Boundary condition losses
+    bc_loss1 = jnp.mean((ufunc(jnp.array([[xmin]])) - U_0) ** 2)
+    bc_loss2 = jnp.mean((ufunc(jnp.array([[xmax]])) - U_1) ** 2)
+
+    # Total loss
+    total_loss = 3000*mse_f + bc_loss1 + bc_loss2
+
+    return total_loss
+
 
 @jax.jit
-def update(opt_state, params, data):
+def update(opt_state, params, data, U_0, U_1):
     """
     Update the parameters of the model using the optimizer.
 
@@ -145,7 +155,7 @@ def update(opt_state, params, data):
         tuple: Updated optimizer state and neural network parameters.
     """
     # Get the gradient w.r.t to MLP params
-    grads = jax.jit(jax.grad(loss_fun, 0))(params, data)
+    grads = jax.jit(jax.grad(loss_fun, 0))(params, data, xmin, xmax, U_0, U_1)
 
     # Update params
     updates, opt_state = optimizer.update(grads, opt_state)
@@ -179,20 +189,21 @@ def init_process(feats):
 
 
 
-features = [8, 8, 8, 1] # size of network
+features = [64, 64, 1] # size of network
 
 N = 20 # number of sampled points
 data, xmin, xmax = generate_dataset(N=N)
 model, params, optimizer, opt_state = init_process(features)
 
-
-epochs = 20_000
+U_0 = 0
+U_1 = 1
+epochs = 100_000
 for epoch in range(epochs):
-    opt_state, params = update(opt_state,params,data)
+    opt_state, params = update(opt_state,params,data, U_0, U_1)
     current_omega = params["params"]["omega"][0]
     # print loss and epoch info
     if epoch%(1000) ==0:
-        print(f'Epoch = {epoch},\tloss = {loss_fun(params,data):.3e},\tomega = {current_omega:.3f}')
+        print(f'Epoch = {epoch},\tloss = {loss_fun(params, data, xmin, xmax, U_0, U_1):.3e},\tomega = {current_omega:.3f}')
 
 # Generate a set of time points for evaluation
 x_eval = np.linspace(xmin, xmax, 500)[:, None]
