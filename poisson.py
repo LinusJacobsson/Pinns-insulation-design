@@ -8,18 +8,21 @@ import matplotlib.pyplot as plt
 
 
 # Hard coded for the boundary conditions in the default arguments
-def analytic(x, U_0 = 1, U_1 = 0, epsilon = 8.854e-12):
+# This is n(x) = x^2
+"""def analytic(x, U_0 = 1, U_1 = 0, epsilon = 8.854e-12):
    
-    #q = 1.602e-19 # elementary charge
-    q = 1
-    epsilon = 1
+    q = 1.602e-19 # elementary charge
+    
     A = -(q/(12*epsilon))
-    B = 637/60
-    C = 0
-    return A * x**4 + B * x + C
+    B = (q/(12*epsilon)-1)
+    C = 1
+    return A * x**4 + B * x + C"""
 
+# assuming y(1) = y'(1) = 1
+def analytic(x):
+    return -(x**3)/6 + 119*x/30 + 1
 
-def generate_dataset(N=100, noise_percent=0.0, seed=420, U_0=1, U_1=0):
+def generate_dataset(N=100, noise_percent=0.0, seed=420, U_0=1, U_1=1):
     """
     Generate a dataset for training the neural network.
 
@@ -35,7 +38,7 @@ def generate_dataset(N=100, noise_percent=0.0, seed=420, U_0=1, U_1=0):
         tuple: A tuple containing the dataset and the min/max values of the time domain.
     """
     np.random.seed(seed)
-    xmin, xmax = 0.0, 5
+    xmin, xmax = 0.0, 5.0
     x_vals = np.random.uniform(low=xmin, high=xmax, size=(N, 1))
     u_vals = analytic(x=x_vals)
     noise = np.random.normal(0, u_vals.std(), [N, 1]) * noise_percent
@@ -87,12 +90,12 @@ def MSE(true, pred):
     
 
 def PINN_f(x, ufunc):
-    q = 1 # elementary charge
-    epsilon = 1
+    q = 1.602e-19 # elementary charge
+    epsilon = 8.854e-12
 
     u_x = lambda x: jax.grad(lambda x: jnp.sum(ufunc(x)))(x)
     u_xx = lambda x: jax.grad(lambda x: jnp.sum(u_x(x)))(x)
-    return u_xx(x) + (q/epsilon)*x**2  # Laplace equation for n(x) = x^2    
+    return u_xx(x) + x # Laplace equation for n(x) = log(x)   
 
 @jax.jit
 def uNN(params, x):
@@ -112,15 +115,15 @@ def uNN(params, x):
 
 def loss_fun(params, data, xmin, xmax, U_0, U_1):
     """
-    Calculate the loss function for the neural network training.
+    Calculate the loss function for the neural network training including new boundary conditions u(1) = 1 and u'(1) = 1.
 
     Args:
         params (dict): Parameters of the neural network.
         data (array_like): Collocation points for differential equation.
         xmin (float): Minimum boundary point.
-        xmax (float): Maximum boundary point.
+        xmax (float): Maximum boundary point (assumed to be 1 for the boundary condition u(1) = 1 and u'(1) = 1).
         U_0 (float): Solution value at xmin.
-        U_1 (float): Solution value at xmax.
+        U_1 (float): Solution value at xmax, which is 1 according to the boundary condition u(1) = 1.
 
     Returns:
         float: Computed loss value.
@@ -128,15 +131,19 @@ def loss_fun(params, data, xmin, xmax, U_0, U_1):
     x_c, _ = data[:, [0]], data[:, [1]]
     ufunc = lambda x: uNN(params, x)
 
+    # Compute the gradient of the neural network output w.r.t. its input
+    du_dx = lambda x: jax.grad(lambda x: ufunc(x)[0, 0])(x)
     # Differential equation loss
     mse_f = jnp.mean(PINN_f(x_c, ufunc) ** 2)
 
     # Boundary condition losses
-    bc_loss1 = jnp.mean((ufunc(jnp.array([[xmin]])) - U_0) ** 2)
-    bc_loss2 = jnp.mean((ufunc(jnp.array([[xmax]])) - U_1) ** 2)
+    bc_loss1 = jnp.mean((ufunc(jnp.array([[xmin]])) - 1) ** 2)
+
+    # Derivative boundary condition at x = 1
+    bc_loss2 = jnp.mean((ufunc(jnp.array([[xmax]]))) ** 2)
 
     # Total loss
-    total_loss = 3000*mse_f + bc_loss1 + bc_loss2
+    total_loss = mse_f + bc_loss1 + bc_loss2
 
     return total_loss
 
@@ -189,15 +196,15 @@ def init_process(feats):
 
 
 
-features = [64, 64, 1] # size of network
+features = [8, 8, 1] # size of network
 
 N = 20 # number of sampled points
 data, xmin, xmax = generate_dataset(N=N)
 model, params, optimizer, opt_state = init_process(features)
 
-U_0 = 0
-U_1 = 1
-epochs = 100_000
+U_0 = 1
+U_1 = 0
+epochs = 10_000
 for epoch in range(epochs):
     opt_state, params = update(opt_state,params,data, U_0, U_1)
     current_omega = params["params"]["omega"][0]
@@ -221,6 +228,7 @@ plt.scatter(data[:, 0], analytic(data[:, 0]), color = 'red')
 plt.plot(x_eval, nn_solution, label='NN Prediction', linestyle='--', color='red')
 plt.xlabel('Time')
 plt.ylabel('Displacement')
+plt.grid()
 plt.title('Comparison of Analytical and NN Solutions for the SHO')
 plt.legend()
 plt.show()
