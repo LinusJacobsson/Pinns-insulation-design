@@ -22,6 +22,27 @@ import matplotlib.pyplot as plt
 def analytic(x):
     return -(x**3)/6 + 119*x/30 + 1
 
+
+
+@jax.jit
+def electric_field_single(params, x):
+    """
+    Compute the electric field as the negative gradient of the potential U for a single input x.
+
+    Args:
+        params (dict): Parameters of the neural network.
+        x (array_like): Single input data to the network.
+
+    Returns:
+        array_like: Electric field computed as -dU/dx for the single input x.
+    """
+    # Compute the gradient of the neural network output with respect to its input
+    dU_dx = jax.grad(lambda x: jnp.squeeze(uNN(params, x)))(x)
+    
+    # Return the negative of the gradient to represent the electric field
+    return -dU_dx
+
+
 def generate_dataset(N=100, noise_percent=0.0, seed=420, U_0=1, U_1=1):
     """
     Generate a dataset for training the neural network.
@@ -204,7 +225,7 @@ model, params, optimizer, opt_state = init_process(features)
 
 U_0 = 1
 U_1 = 0
-epochs = 10_000
+epochs = 50_000
 for epoch in range(epochs):
     opt_state, params = update(opt_state,params,data, U_0, U_1)
     current_omega = params["params"]["omega"][0]
@@ -221,14 +242,34 @@ solution = analytic(x=x_eval)
 # Compute the neural network prediction
 nn_solution = uNN(params, jnp.array(x_eval))
 
-# Plotting
-plt.figure(figsize=(10, 6))
+# Vectorize the electric_field_single function to work over batches of inputs
+electric_field_batch = jax.jit(jax.vmap(electric_field_single, in_axes=(None, 0)))
+
+# Now use electric_field_batch to compute the electric field for all points in x_eval
+e_field_nn = electric_field_batch(params, jnp.array(x_eval).reshape(-1, 1))
+
+# Plotting both the solution and the electric field
+plt.figure(figsize=(12, 8))
+
+# Plot the potential
+plt.subplot(2, 1, 1)
 plt.plot(x_eval, solution, label='Analytical Solution', color='blue')
-plt.scatter(data[:, 0], analytic(data[:, 0]), color = 'red')
+plt.scatter(data[:, 0], analytic(data[:, 0]), color='red', label='Training Data')
 plt.plot(x_eval, nn_solution, label='NN Prediction', linestyle='--', color='red')
-plt.xlabel('Time')
-plt.ylabel('Displacement')
-plt.grid()
-plt.title('Comparison of Analytical and NN Solutions for the SHO')
+plt.xlabel('x')
+plt.ylabel('U(x)')
+plt.title('Potential U(x)')
 plt.legend()
+plt.grid()
+
+# Plot the electric field
+plt.subplot(2, 1, 2)
+plt.plot(x_eval, e_field_nn, label='NN Predicted Electric Field', linestyle='--', color='green')
+plt.xlabel('x')
+plt.ylabel('E(x)')
+plt.title('Electric Field E(x)')
+plt.legend()
+plt.grid()
+
+plt.tight_layout()
 plt.show()
