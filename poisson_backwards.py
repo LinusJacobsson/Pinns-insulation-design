@@ -7,15 +7,15 @@ from typing import Sequence, Callable
 import matplotlib.pyplot as plt
 
 
-# Analytical solution of the potential
-def analytic(x, const):
+@jax.jit
+def potential(x, const):
     return -(const*x**3)/6 + (x/15)*(250*const-189) + 1
 
-
+@jax.jit
 def electric_field(x, const):
     return (const * x**2) / 2 - (50 * const) / 3 + 63 / 5
 
-#@jax.jit
+@jax.jit
 def electric_field_single(params, x):
     """
     Compute the electric field as the negative gradient of the potential U for a single input x.
@@ -33,13 +33,8 @@ def electric_field_single(params, x):
     # Return the negative of the gradient to represent the electric field
     return -dU_dx
 
-def electric_field_nn(params, x_vals):
-    # Directly compute the gradient of uNN with respect to x_vals
-    grad_uNN = jax.vmap(jax.grad(lambda x: jnp.squeeze(uNN(params, jnp.array([x])))), in_axes=(0,), out_axes=0)
-    return -grad_uNN(x_vals)
 
-
-def generate_dataset(N=100, noise_percent=0.0, seed=420, const = 4):
+def generate_dataset(N=10, noise_percent=0.0, seed=420, charge = 1000):
     """
     Generate a dataset for training the neural network.
 
@@ -57,7 +52,7 @@ def generate_dataset(N=100, noise_percent=0.0, seed=420, const = 4):
     np.random.seed(seed)
     xmin, xmax = 0.0, 10.0
     x_vals = np.random.uniform(low=xmin, high=xmax, size=(N, 1))
-    u_vals = analytic(x=x_vals, const=const)
+    u_vals = electric_field(x=x_vals, const=charge)
     noise = np.random.normal(0, u_vals.std(), [N, 1]) * noise_percent
     u_vals += noise
     colloc = jnp.concatenate([x_vals, u_vals], axis=1)
@@ -66,23 +61,18 @@ def generate_dataset(N=100, noise_percent=0.0, seed=420, const = 4):
 
 
 class MLP(nn.Module):
-    """
-    A simple Multi-Layer Perceptron (MLP) model using the Flax Linen API.
-
-    Attributes:
-        features (Sequence[int]): The number of neurons in each layer of the MLP.
-        omega_init (Callable, optional): Initializer for the omega parameter.
-    """
-
     features: Sequence[int]
-    # We also add an initializer for the omega parameter
-    charge_init: Callable = jax.nn.initializers.ones
+    charge_value: float  # Add a class attribute for the charge value
 
     def setup(self):
-        # include the omega parameter during setup
-        charge = self.param("charge", self.charge_init, (1,))
-        self.layers = [nn.Dense(features=feat, use_bias=True) for feat in self.features]
-        
+        # Define a custom initializer function for the charge parameter
+        def charge_init(key, shape):
+            return jnp.full(shape, self.charge_value)  # Initialize charge with the specified value
+
+        # Initialize the charge parameter with the custom initializer
+        self.charge = self.param("charge", charge_init, (1,))
+        self.layers = [nn.Dense(features=feat) for feat in self.features]
+
     def __call__(self, inputs):
         x = inputs
         for idx, layer in enumerate(self.layers):
@@ -90,7 +80,6 @@ class MLP(nn.Module):
             if idx != len(self.layers)-1:
                 x = jnp.tanh(x)
         return x
-
 @jax.jit
 def MSE(true, pred):
     """
@@ -107,12 +96,10 @@ def MSE(true, pred):
     
 
 def PINN_f(x, ufunc, params):
-    q = 1.602e-19 # elementary charge
-    epsilon = 8.854e-12
     charge = params["params"]["charge"][0]
     u_x = lambda x: jax.grad(lambda x: jnp.sum(ufunc(x)))(x)
     u_xx = lambda x: jax.grad(lambda x: jnp.sum(u_x(x)))(x)
-    return u_xx(x) + charge*x # Laplace equation for n(x) = log(x)   
+    return u_xx(x)  + x   
 
 
 @jax.jit
@@ -132,31 +119,47 @@ def uNN(params, x):
 
 
 @jax.jit
-def loss_fun(params, data):
-    x_vals = data[:, 0:1]  # Reshape to maintain 2D array structure
-    #print(f"x_vals: {x_vals}")
-    e_vals = data[:, 1]
-    #print(f"e_vals: {e_vals}")
-    u_pred = uNN(params, x_vals)  # Predict U(x) directly
-    
-    electric_field_batch = jax.jit(jax.vmap(electric_field_single, in_axes=(None, 0)))
+def loss_fun(params, data, xmin, xmax, U_0, U_1):
+    """
+    Calculate the loss function for the neural network training including new boundary conditions u(1) = 1 and u'(1) = 1.
 
-    e_field_nn = electric_field_batch(params, jnp.array(x_vals).reshape(-1, 1))
-    #print(f"E-field from potential: {e_field_nn}")
-    data_loss = MSE(e_field_nn, e_vals)
-    #print(f"data loss: {data_loss}")
-    # Physics loss: Ensure the differential equation is satisfied
-    # Assuming the differential equation involves u''(x) + const*x = 0
-    physics_loss = PINN_f(x_vals, u_pred, params) 
-    #print(f"Physics loss: {physics_loss}")
-    # Combine losses
-    total_loss = data_loss + physics_loss
+    Args:
+        params (dict): Parameters of the neural network.
+        data (array_like): Collocation points for differential equation.
+        xmin (float): Minimum boundary point.
+        xmax (float): Maximum boundary point (assumed to be 1 for the boundary condition u(1) = 1 and u'(1) = 1).
+        U_0 (float): Solution value at xmin.
+        U_1 (float): Solution value at xmax, which is 1 according to the boundary condition u(1) = 1.
+
+    Returns:
+        float: Computed loss value.
+    """
+    x_data, u_data= data[:, [0]], data[:, [1]]
+    ufunc = lambda x: uNN(params, x)
+
+    # Compute the gradient of the neural network output w.r.t. its input
+    du_dx = lambda x: jax.grad(lambda x: ufunc(x)[0, 0])(x)
+    # Differential equation loss
+    mse_f = jnp.mean(PINN_f(x_data, ufunc, params) ** 2)
+
+    # Boundary condition losses
+    #bc_loss1 = MSE(ufunc(jnp.array([[xmin]])), 1)
+    bc_loss1 = jnp.mean((ufunc(jnp.array([[xmin]])) - 1) ** 2)
+    #bc_loss2 = MSE(ufunc(jnp.array([[xmax]])), -125)
+    # Derivative boundary condition at x = 1
+    bc_loss2 = jnp.mean((ufunc(jnp.array([[xmax]]))+125) ** 2)
+    data_loss = MSE(du_dx(x_data), u_data)
+    # Data loss 
+    #data_loss = MSE()
+    # Total loss
+
+    total_loss = mse_f + bc_loss1 + bc_loss2
+
     return total_loss
 
 
-
 @jax.jit
-def update(opt_state, params, data):
+def update(opt_state, params, data, U_0, U_1):
     """
     Update the parameters of the model using the optimizer.
 
@@ -169,7 +172,7 @@ def update(opt_state, params, data):
         tuple: Updated optimizer state and neural network parameters.
     """
     # Get the gradient w.r.t to MLP params
-    grads = jax.jit(jax.grad(loss_fun, 0))(params, data)
+    grads = jax.jit(jax.grad(loss_fun, 0))(params, data, xmin, xmax, U_0, U_1)
 
     # Update params
     updates, opt_state = optimizer.update(grads, opt_state)
@@ -178,7 +181,7 @@ def update(opt_state, params, data):
     return opt_state, params
 
 
-def init_process(feats):
+def init_process(feats, charge_guess):
     """
     Initialize the neural network model, its parameters, the optimizer, and the optimizer state.
 
@@ -188,14 +191,14 @@ def init_process(feats):
     Returns:
         tuple: Initialized model, parameters, optimizer, and optimizer state.
     """
-    model = MLP(features=feats)
+    model = MLP(features=feats, charge_value=charge_guess)
 
     key1, key2 = jax.random.split(jax.random.PRNGKey(420), num=2)
 
     dummy_in = jax.random.normal(key1, (1,))
     params = model.init(key2, dummy_in)
 
-    lr = optax.piecewise_constant_schedule(1e-2, {15_000: 5e-3, 80_000: 1e-3})
+    lr = optax.piecewise_constant_schedule(1e-2, {70_000: 5e-3, 90_000: 1e-3})
     optimizer = optax.adam(lr)
     opt_state = optimizer.init(params)
 
@@ -203,26 +206,45 @@ def init_process(feats):
 
 
 
-features = [64, 64, 1] # size of network
+features = [16, 16,  1] # size of network
 
-N = 1000 # number of sampled points
-data, xmin, xmax = generate_dataset(N=N)
-model, params, optimizer, opt_state = init_process(features)
+N = 150 # number of sampled points
 
-const = 4
-epochs = 10_000
+CHARGE = 1.0
+CHARGE_GUESS = 1.0
+
+U_0 = 1
+U_1 = 0
+data, xmin, xmax = generate_dataset(N=N, charge=CHARGE)
+model, params, optimizer, opt_state = init_process(features, CHARGE_GUESS)
+epochs = 20_000
 for epoch in range(epochs):
-    opt_state, params = update(opt_state,params,data)
-    current_charge = params["params"]["charge"][0]
-    # print loss and epoch info
-    if epoch%(1000) ==0:
-        print(f'Epoch = {epoch},\tloss = {loss_fun(params, data):.3e},\tcharge= {current_charge:.3f}')
+    opt_state, params = update(opt_state, params, data, U_0, U_1)
+    
+    # Conditionally log detailed loss components every 1000th epoch
+    if epoch % 1000 == 0:
+        # Recompute the components of the loss for logging
+        x_data, u_data = data[:, [0]], data[:, [1]]
+        ufunc = lambda x: uNN(params, x)
+        
+        # Compute necessary gradients and losses
+        du_dx = lambda x: jax.grad(lambda x: ufunc(x)[0, 0])(x)
+        mse_f = jnp.mean(PINN_f(x_data, ufunc, params) ** 2)
+        bc_loss1 = MSE(ufunc(jnp.array([[xmin]])), U_0)
+        bc_loss2 = MSE(ufunc(jnp.array([[xmax]])), U_1)
+        data_loss = MSE(du_dx(x_data), u_data)
+        total_loss = mse_f + bc_loss1 + bc_loss2 + 1000*data_loss
+        
+        # Print the detailed losses
+        print(f'Epoch = {epoch}, Total Loss = {total_loss:.3e}, DE Loss = {mse_f:.3e}, BC Loss 1 = {bc_loss1:.3e}, BC Loss 2 = {bc_loss2:.3e}, Data Loss = {data_loss:.3e}')
+
+current_charge = params["params"]["charge"][0]
 
 # Generate a set of time points for evaluation
 x_eval = np.linspace(xmin, xmax, 500)[:, None]
 
 # Compute the analytical solution
-solution = analytic(x=x_eval, const=const)
+solution = potential(x=x_eval, const=CHARGE)
 
 # Compute the neural network prediction
 nn_solution = uNN(params, jnp.array(x_eval))
@@ -233,25 +255,25 @@ electric_field_batch = jax.jit(jax.vmap(electric_field_single, in_axes=(None, 0)
 # Now use electric_field_batch to compute the electric field for all points in x_eval
 e_field_nn = electric_field_batch(params, jnp.array(x_eval).reshape(-1, 1))
 # Evaluate the analytical electric field over the same range
-analytical_e_field = electric_field(x_eval, const=const)
+analytical_e_field = electric_field(x_eval, const=CHARGE)
 
-# Plotting
-plt.figure(figsize=(12, 8))
+# Your existing plotting code
+fig = plt.figure(figsize=(10, 6))  # Store the figure in a variable
 
 # Plot the potential
 plt.subplot(2, 1, 1)
 plt.plot(x_eval, solution, label='Analytical Solution', color='blue')
+plt.scatter(data[:, 0], potential(data[:, 0], const=CHARGE), color='red', label='Training Data')
 plt.plot(x_eval, nn_solution, label='NN Prediction', linestyle='--', color='red')
 plt.xlabel('x')
 plt.ylabel('U(x)')
-plt.title('Potential U(x)')
+plt.title(f'True charge: {CHARGE:.2f}, Predicted charge: {current_charge:.2f}, Error: {100*(CHARGE-current_charge)/CHARGE:.2f}%')
 plt.legend()
 plt.grid()
 
 # Plot the electric fields
 plt.subplot(2, 1, 2)
 plt.plot(x_eval, analytical_e_field, label='Analytical Electric Field', color='blue')
-plt.scatter(data[:, 0], electric_field(data[:, 0], const=const), color='red', label='Training Data')
 plt.plot(x_eval, e_field_nn, label='NN Predicted Electric Field', linestyle='--', color='red')
 plt.xlabel('x')
 plt.ylabel('E(x)')
@@ -260,4 +282,8 @@ plt.legend()
 plt.grid()
 
 plt.tight_layout()
+
+# Add an overall title to the figure
+fig.suptitle('Overall Title for the Figure', fontsize=16, y=1.05)  # Adjust the font size and position as needed
+
 plt.show()
