@@ -59,7 +59,7 @@ def generate_dataset(N=10, noise_percent=0.0, seed=420, charge = 1000):
     xmin, xmax = 0.0, 1.0
     # Uniform random
     #x_vals = np.random.uniform(low=xmin, high=xmax, size=(N, 1))
-    x_vals = np.linspace(xmin, xmax).reshape(-1, 1)
+    x_vals = np.linspace(xmin, xmax, num=N).reshape(-1, 1)  # Correctly generate N data points
     u_vals = electric_field(x=x_vals, const=charge)
     #noise = np.random.normal(0, u_vals.std(), [N, 1]) * noise_percent
     #u_vals += noise
@@ -252,22 +252,30 @@ features = [16, 16, 1] # size of network
 
 N = 100 # number of sampled points
 
-CHARGE = 0.100 # Just nu funkar värden mellan 1e-2 till 1e0 utan ändringar 
+CHARGE = 10 # Just nu funkar värden mellan 1e-2 till 1e0 utan ändringar 
 
 CHARGE_GUESS = 90.0
 
 U_0 = 1
 U_1 = -10
 data, xmin, xmax = generate_dataset(N=N, charge=CHARGE)
+
+print("Original Data:", data)
+x_vals_normalized, e_vals_normalized = normalize_data(data[:, 0], data[:, 1], normalize_to_minus1_1=False)  # Adjust based on your preference
+normalized_data = jnp.concatenate([x_vals_normalized[:, None], e_vals_normalized[:, None]], axis=1)
+print("Normalized Data:", normalized_data)
+print(normalized_data.shape)
+
+
 model, params, optimizer, opt_state = init_process(features, CHARGE_GUESS)
 epochs = 100_000
 for epoch in range(epochs):
-    opt_state, params = update(opt_state, params, data, U_0, U_1)
+    opt_state, params = update(opt_state, params, normalized_data, U_0, U_1)
     
     # Conditionally log detailed loss components every 1000th epoch
     if epoch % 1000 == 0:
         # Recompute the components of the loss for logging
-        x_data, u_data = data[:, [0]], data[:, [1]]
+        x_data, u_data = normalized_data[:, [0]], normalized_data[:, [1]]
         ufunc = lambda x: uNN(params, x)
         
         # Compute necessary gradients and losses
@@ -284,7 +292,7 @@ for epoch in range(epochs):
 current_charge = params["params"]["charge"][0]
 
 # Generate a set of time points for evaluation
-x_eval = np.linspace(xmin, xmax, 5000)[:, None]
+x_eval = np.linspace(xmin, xmax, 500)[:, None]
 
 # Compute the analytical solution
 solution = potential(x=x_eval, const=CHARGE)
