@@ -7,13 +7,19 @@ from typing import Sequence, Callable
 import matplotlib.pyplot as plt
 
 
-@jax.jit
+"""@jax.jit
 def potential(x, const):
     return -(const*x**3)/6 + (x/15)*(250*const-189) + 1
 
 @jax.jit
 def electric_field(x, const):
-    return -(const * x**2) / 2 + (250*const-189)/15
+    return -(const * x**2) / 2 + (250*const-189)/15"""
+
+def potential(x, const):
+    return -(const*x**3)/6 + (const/6 - 11)*x + 1
+
+def electric_field(x, const):
+    return -(const * x**2)/2 + (const/6 - 11)
 
 @jax.jit
 def electric_field_single(params, x):
@@ -50,7 +56,7 @@ def generate_dataset(N=10, noise_percent=0.0, seed=420, charge = 1000):
         tuple: A tuple containing the dataset and the min/max values of the time domain.
     """
     np.random.seed(seed)
-    xmin, xmax = 0.0, 10.0
+    xmin, xmax = 0.0, 1.0
     # Uniform random
     #x_vals = np.random.uniform(low=xmin, high=xmax, size=(N, 1))
     x_vals = np.linspace(xmin, xmax).reshape(-1, 1)
@@ -60,6 +66,40 @@ def generate_dataset(N=10, noise_percent=0.0, seed=420, charge = 1000):
     colloc = jnp.concatenate([x_vals, u_vals], axis=1)
 
     return colloc, xmin, xmax
+
+
+import numpy as np
+
+def normalize_data(x_vals, e_vals, normalize_to_minus1_1=False):
+    """
+    Normalizes x_vals and e_vals to either [0, 1] or [-1, 1].
+    
+    Parameters:
+    - x_vals: numpy array, input values.
+    - e_vals: numpy array, electric field values.
+    - normalize_to_minus1_1: bool, if True normalizes to [-1, 1], otherwise to [0, 1].
+    
+    Returns:
+    - x_vals_normalized: numpy array, normalized input values.
+    - e_vals_normalized: numpy array, normalized electric field values.
+    """
+    
+    # Normalize x_vals
+    x_min, x_max = np.min(x_vals), np.max(x_vals)
+    if normalize_to_minus1_1:
+        x_vals_normalized = 2 * (x_vals - x_min) / (x_max - x_min) - 1
+    else:
+        x_vals_normalized = (x_vals - x_min) / (x_max - x_min)
+    
+    # Normalize e_vals
+    e_min, e_max = np.min(e_vals), np.max(e_vals)
+    if normalize_to_minus1_1:
+        e_vals_normalized = 2 * (e_vals - e_min) / (e_max - e_min) - 1
+    else:
+        e_vals_normalized = (e_vals - e_min) / (e_max - e_min)
+    
+    return x_vals_normalized, e_vals_normalized
+
 
 
 class MLP(nn.Module):
@@ -101,8 +141,7 @@ def PINN_f(x, ufunc, params):
     charge = params["params"]["charge"][0]
     u_x = lambda x: jax.grad(lambda x: jnp.sum(ufunc(x)))(x)
     u_xx = lambda x: jax.grad(lambda x: jnp.sum(u_x(x)))(x)
-    return u_xx(x)/charge  + x   
-
+    return u_xx(x)/charge + x
 
 @jax.jit
 def uNN(params, x):
@@ -150,13 +189,13 @@ def loss_fun(params, data, xmin, xmax, U_0, U_1):
     bc_loss1 = jnp.mean((ufunc(jnp.array([[xmin]])) - 1) ** 2)
     #bc_loss2 = MSE(ufunc(jnp.array([[xmax]])), -125)
     # Derivative boundary condition at x = 1
-    bc_loss2 = jnp.mean((ufunc(jnp.array([[xmax]]))+125) ** 2)
+    bc_loss2 = jnp.mean((ufunc(jnp.array([[xmax]]))+ 10) ** 2)
     data_loss = MSE(du_dx(x_data), u_data)
     # Data loss 
     #data_loss = MSE()
     # Total loss
 
-    total_loss = 1000*mse_f + bc_loss1 + bc_loss2 + 100*data_loss
+    total_loss = 10*mse_f + bc_loss1 + bc_loss2 + 1000*data_loss
 
     return total_loss
 
@@ -201,7 +240,7 @@ def init_process(feats, charge_guess):
     dummy_in = jax.random.normal(key1, (1,))
     params = model.init(key2, dummy_in)
 
-    lr = optax.piecewise_constant_schedule(1e-2, {150_000: 5e-3, 250_000: 1e-3})
+    lr = optax.piecewise_constant_schedule(1e-2, {50_000: 5e-3, 80_000: 1e-3})
     optimizer = optax.adam(lr)
     opt_state = optimizer.init(params)
 
@@ -209,18 +248,19 @@ def init_process(feats, charge_guess):
 
 
 
-features = [16, 16,  1] # size of network
+features = [16, 16, 1] # size of network
 
-N = 120 # number of sampled points
+N = 100 # number of sampled points
 
-CHARGE = 10.0
-CHARGE_GUESS = 3.0
+CHARGE = 0.100 # Just nu funkar värden mellan 1e-2 till 1e0 utan ändringar 
+
+CHARGE_GUESS = 90.0
 
 U_0 = 1
-U_1 = -125
+U_1 = -10
 data, xmin, xmax = generate_dataset(N=N, charge=CHARGE)
 model, params, optimizer, opt_state = init_process(features, CHARGE_GUESS)
-epochs = 300_000
+epochs = 100_000
 for epoch in range(epochs):
     opt_state, params = update(opt_state, params, data, U_0, U_1)
     
@@ -244,7 +284,7 @@ for epoch in range(epochs):
 current_charge = params["params"]["charge"][0]
 
 # Generate a set of time points for evaluation
-x_eval = np.linspace(xmin, xmax, 500)[:, None]
+x_eval = np.linspace(xmin, xmax, 5000)[:, None]
 
 # Compute the analytical solution
 solution = potential(x=x_eval, const=CHARGE)
@@ -269,7 +309,7 @@ plt.plot(x_eval, solution, label='Analytical Solution', color='blue')
 plt.plot(x_eval, nn_solution, label='NN Prediction', linestyle='--', color='red')
 plt.xlabel('x')
 plt.ylabel('U(x)')
-plt.title(f'True charge: {CHARGE:.2f}, Predicted charge: {current_charge:.2f}, Error: {100*(CHARGE-current_charge)/CHARGE:.2f}%')
+plt.title(f'True charge: {CHARGE:.4f}, Predicted charge: {current_charge:.4f}, Error: {100*(CHARGE-current_charge)/CHARGE:.2f}%')
 plt.legend()
 plt.grid()
 
