@@ -16,10 +16,10 @@ from IPython.display import clear_output
 
 @dataclass
 class HarmonicConfig:
-    m = 1.5
-    mu = 0
-    k = 1.5
-    initial_x = -2
+    m = 1
+    mu = 4
+    k = 400
+    initial_x = 1
     initial_v = 0
     amplitude = 1
     train = True
@@ -87,30 +87,6 @@ def model_loss(params, apply_fn, t_samples, y_samples, t_physics, omega, initial
     total_loss = eq_loss + ic_loss_displacement + ic_loss_velocity + 10*data_loss
     return total_loss, eq_loss, ic_loss_displacement, ic_loss_velocity, data_loss
 
-def pde_residual_gradient(t, apply_fn, params):
-    # Gradient of the PDE residual
-    grad_pde_residual = grad(lambda t: pde_residual(t, apply_fn, params))
-    # Vectorize the gradient computation over t
-    return vmap(grad_pde_residual)(t)
-
-
-def pde_residual(t, apply_fn, params):
-    # Reshape t to a 2D array for displacement computation
-    t_reshaped = jnp.array([t])
-    displacement_val = apply_fn(params, t_reshaped)[0, 0]
-    d2x_dt2 = second_derivative(t[0], apply_fn, params)
-    residual = HarmonicConfig.m * d2x_dt2 + HarmonicConfig.k * displacement_val
-    return residual
-
-def second_derivative(t, apply_fn, params):
-    def displacement_scalar(t_scalar):
-        t_array = jnp.array([[t_scalar]])
-        return apply_fn(params, t_array)[0, 0]
-
-    dx_dt = grad(displacement_scalar)(t)
-    d2x_dt2 = grad(lambda t: dx_dt)(t)
-    return d2x_dt2
-
 
 
 @jax.jit
@@ -133,17 +109,17 @@ def main():
     state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
 
 
-    omega = 1
-    initial_x = -2.0
+    omega = 20
+    initial_x = 1.0
     initial_v = 0
 
-    t = np.linspace(0, 8, 100).reshape(-1, 1)
+    t = np.linspace(0, 1, 100).reshape(-1, 1)
     y = analytical_solution(t)
     #t_samples = np.concatenate([t[0:200:2], t[800:1000:2]])
     #y_samples = np.concatenate([y[0:200:2], y[800:1000:2]])
     t_samples = t[0:50:5]
     y_samples = y[0:50:5]
-    t_physics = np.linspace(0, 8, 20).reshape(-1, 1)
+    t_physics = np.linspace(0, 1, 20).reshape(-1, 1)
 
 
 
@@ -160,33 +136,28 @@ def main():
             _, eq_loss, ic_loss_disp, ic_loss_vel, data_loss = model_loss(state.params, model.apply, t_samples, y_samples, t_physics, omega, initial_x, initial_v)
             print(f"Epoch {epoch:.2f}, Equation Loss: {eq_loss:.2f}, IC Loss Displacement: {ic_loss_disp:.2f}, IC Loss Velocity: {ic_loss_vel:.2f}, Data Loss: {data_loss:.2f}")
 
-    pde_gradients = pde_residual_gradient(t_physics, model.apply, state.params)
 
     predict_fn = jax.jit(lambda t: model.apply(state.params, t))
     predicted_displacement = vmap(predict_fn)(t)
     
 
-    # Plotting results
-    fig, ax1 = plt.subplots()
+    # Plotting the predicted displacement
+    plt.plot(t[:, 0], predicted_displacement, label='Predicted Displacement by PINN')
+    
+    # Plotting the true solution
+    plt.plot(t[:, 0], analytical_solution(t), label='True Solution', linestyle='dashed')
+    
+    # Plotting the data loss points
+    plt.scatter(t_samples[:, 0], y_samples[:, 0], color='r', marker='o', label='Data Loss Points')
 
-    # Displacement plot
-    ax1.set_xlabel('Time')
-    ax1.set_ylabel('Displacement')
-    ax1.plot(t[:, 0], predicted_displacement, label='Predicted Displacement by PINN')
-    ax1.plot(t[:, 0], analytical_solution(t), label='True Solution', linestyle='dashed')
-    ax1.scatter(t_samples[:, 0], y_samples[:, 0], color='r', marker='o', label='Data Points')
-    ax1.legend()
-    ax1.set_ylim(-4, 4)
-    ax1.grid(True)
+    # Plotting the physics loss points at y=0 (on the x-axis)
+    plt.scatter(t_physics[:, 0], np.zeros_like(t_physics[:, 0]), color='b', marker='.', label='Physics Loss Points')
 
-    # Create a twin axis for the gradient plot
-    ax2 = ax1.twinx()
-    ax2.set_ylabel('PDE Residual Gradient', color='tab:purple')
-    ax2.plot(t_physics[:, 0], pde_gradients, color='tab:purple', label='PDE Residual Gradient', linestyle=':')
-    ax2.tick_params(axis='y', labelcolor='tab:purple')
-
-    fig.tight_layout()
-    plt.title('Learned Simple Harmonic Oscillator and PDE Residual Gradient')
+    plt.xlabel('Time')
+    plt.ylabel('Displacement')
+    plt.title('Learned Simple Harmonic Oscillator vs True Solution')
+    plt.legend()
+    plt.grid(True)
     plt.show()
 
 

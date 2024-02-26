@@ -16,9 +16,9 @@ from IPython.display import clear_output
 
 @dataclass
 class HarmonicConfig:
-    m = 1
-    mu = 4
-    k = 400
+    m = 1.5
+    mu = 0
+    k = 1.5
     initial_x = 1
     initial_v = 0
     amplitude = 1
@@ -75,7 +75,8 @@ def model_loss(params, apply_fn, t_samples, y_samples, t_physics, omega, initial
 
     def displacement(t):
         t_reshaped = t.reshape(-1, 1)
-        return apply_fn(params, t_reshaped)
+        pred_displacement, _, _, _ = apply_fn(params, t_reshaped)  # Changed to only extract first output
+        return pred_displacement
     
     def first_derivative(t):
         return grad(lambda t: displacement(jnp.array([t]))[0, 0])(t)
@@ -88,7 +89,7 @@ def model_loss(params, apply_fn, t_samples, y_samples, t_physics, omega, initial
     dx_dt = vmap(first_derivative)(t_physics[:, 0])
     d2x_dt2_physics = vmap(second_derivative)(t_physics[:, 0])
     pred_displacement_physics = displacement(t_physics)
-    eq_loss = jnp.mean((m*d2x_dt2_physics + mu*dx_dt + k*pred_displacement_physics[:, 0])**2)
+    eq_loss = jnp.mean((m*d2x_dt2_physics/k + mu*dx_dt/k + pred_displacement_physics[:, 0])**2)
     #eq_loss = 0
     # Use t_samples and y_samples for the data loss
     pred_displacement_data = displacement(t_samples)
@@ -98,7 +99,7 @@ def model_loss(params, apply_fn, t_samples, y_samples, t_physics, omega, initial
     ic_loss_displacement = (displacement(jnp.array([[0.]]))[0, 0] - initial_displacement) ** 2
     ic_loss_velocity = (grad(lambda t: displacement(jnp.array([[t]]))[0, 0])(0.0) - initial_velocity) ** 2
 
-    total_loss = eq_loss + ic_loss_displacement + ic_loss_velocity + 10*data_loss
+    total_loss = eq_loss + ic_loss_displacement + ic_loss_velocity + data_loss
     return total_loss, eq_loss, ic_loss_displacement, ic_loss_velocity, data_loss
 
 
@@ -116,32 +117,25 @@ def train_step(state, t_samples, y_samples, t_physics, omega, initial_displaceme
 
 def main():
         # Initialize model and optimizer
-    model = PINN(num_inputs=1, num_outputs=1, num_hidden=8, num_layers=3, m=10.0, mu=10.0, k=100.0)
+    model = PINN(num_inputs=1, num_outputs=1, num_hidden=8, num_layers=3, m=1, mu=1, k=1)
     rng = random.PRNGKey(0)
     params = model.init(rng, jnp.array([[0.]]))
     tx = optax.adam(learning_rate=0.001)
     state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
 
 
-    omega = 20
+    omega = 1
     initial_x = 1.0
     initial_v = 0
 
-    t = np.linspace(0, 1, 100).reshape(-1, 1)
+    t = np.linspace(0, 1, 500).reshape(-1, 1)
     y = analytical_solution(t)
     #t_samples = np.concatenate([t[0:200:2], t[800:1000:2]])
     #y_samples = np.concatenate([y[0:200:2], y[800:1000:2]])
-    t_samples = t[0:50:5]
-    y_samples = y[0:50:5]
-    t_physics = np.linspace(0, 1, 20).reshape(-1, 1)
+    t_samples = t[0:250:5]
+    y_samples = y[0:250:5]
+    t_physics = np.linspace(0, 1, 100).reshape(-1, 1)
 
-
-
-    plt.figure()
-    plt.plot(t, y, label="Exact solution")
-    plt.scatter(t_samples, y_samples, color="tab:orange", label="Training data")
-    plt.legend()
-    plt.show()
     t_samples.reshape(-1, 1)
 
     for epoch in range(10000):
@@ -151,13 +145,16 @@ def main():
             print(f"Epoch {epoch}, Equation Loss: {eq_loss}, IC Loss Displacement: {ic_loss_disp}, IC Loss Velocity: {ic_loss_vel}, Data Loss: {data_loss}")
             # Unpack and print the physical parameters
             _, m, mu, k = model.apply(state.params, jnp.zeros((1, 1)))
-            print(f"Epoch {epoch}, m: {m}, mu: {mu}, k: {k}, Loss: {_}")
+            print(f"Epoch {epoch}, m: {m}, mu: {mu}, k: {k}")
 
     predict_fn = jax.jit(lambda t: model.apply(state.params, t))
-    predicted_displacement = vmap(predict_fn)(t)
-    
+    # After calling the prediction function
+    predicted_displacement_tuple = vmap(predict_fn)(t)
+   
+    # Extract only the displacement predictions
+    predicted_displacement = predicted_displacement_tuple[0].squeeze()
 
-    # Plotting the predicted displacement
+    # Now, plotting should work
     plt.plot(t[:, 0], predicted_displacement, label='Predicted Displacement by PINN')
     
     # Plotting the true solution
