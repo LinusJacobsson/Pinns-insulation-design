@@ -21,11 +21,24 @@ def charge_distribution(x, d = 0.01):
     return (x - d/2)**3
 
 def generate_dataset(filename, noise_percent=0.0):
-   
     df = pd.read_csv(filename, skiprows=8, header=None, names=['x-coordinate (m)', 'Electric field norm'])
     dataset = df.values
-    noise = np.random.normal(0, dataset[:, 1].std(), [len(dataset[:, 1]), 1]) * noise_percent
-    #dataset[:, 1] += noise
+    
+    # Normalize x values
+    x_max = 0.01  # Max value in original dataset for x-coordinate
+    #dataset[:, 0] = dataset[:, 0] / x_max
+    
+    # Normalize Electric field values
+    E_max = np.max(dataset[:, 1])  # Assuming max electric field value for normalization
+    #dataset[:, 1] = dataset[:, 1] / E_max
+    
+    # Add noise if needed
+    if noise_percent > 0:
+        noise = np.random.normal(0, 1, dataset.shape[0]) * noise_percent  # normalized noise
+        dataset[:, 1] += noise
+    
+    print(f"normalized x-values: {dataset[:, 0]}")
+    print(f"normalized e-values: {dataset[:, 1]}")
     return dataset
 
 
@@ -47,7 +60,7 @@ class MLP(nn.Module):
         for idx, layer in enumerate(self.layers):
             x = layer(x)
             if idx != len(self.layers)-1:
-                x = jnp.tanh(x)
+                x = nn.relu(x)
         return x
     
 @jax.jit
@@ -77,8 +90,10 @@ def loss_fun(params, data_fitting, data_de, U_0, U_1):
     ufunc = lambda x: uNN(params, x).squeeze()  # Ensure this is scalar for each x
 
     # Compute data loss as before
-    du_dx = jax.vmap(lambda x: -jax.grad(ufunc)(x))(x_data)
-    data_loss = MSE(du_dx, e_data)
+    #du_dx = jax.vmap(lambda x: -jax.grad(ufunc)(x))(x_data)
+    du_dx = lambda x: -jax.grad(lambda x: jnp.sum(ufunc(x)))(x)
+
+    data_loss = MSE(du_dx(x_data), e_data)
 
     # Split DE data for function loss calculation
     x_de, _ = data_de[:, [0]], data_de[:, [1]]  # Assuming DE data has the same format
@@ -91,7 +106,7 @@ def loss_fun(params, data_fitting, data_de, U_0, U_1):
     bc_loss2 = MSE(ufunc(jnp.array([[0.01]])), U_1)    
 
     # Combine losses
-    total_loss = 100*mse_f + 20*bc_loss1 + 20*bc_loss2 + 100*data_loss
+    total_loss =  20*bc_loss1 + 20*bc_loss2 + 1000*data_loss + mse_f
     return total_loss
 
 
@@ -121,7 +136,7 @@ def init_process(feats, charge_guess):
 
 
 
-features = [32, 32, 1] # size of network
+features = [16, 16, 1] # size of network
 
 N_data = 100 # number of sampled points
 N_equation = 1000 
@@ -141,7 +156,7 @@ potential_values = generate_dataset(potential_data)
 
 print(f"Starting training")
 model, params, optimizer, opt_state = init_process(features, CHARGE_GUESS)
-epochs = 100_000
+epochs = 76_000
 for epoch in range(epochs):
     opt_state, params = update(opt_state, params, data_fitting, data_equation, U_0, U_1)
     
@@ -173,14 +188,14 @@ print(f"Training complete")
 current_charge = params["params"]["charge"][0]
 
 # Assuming x_eval is a numpy array of evaluation points
-x_eval = np.linspace(0, 0.01, 500)[:, None]
+x_eval = np.linspace(0, 0.01, 1000)[:, None]
 # Vectorize the electric_field_single function to work over batches of inputs
 electric_field_batch = jax.jit(jax.vmap(electric_field_single, in_axes=(None, 0)))
 # Compute predicted potential and electric field using your neural network
 
 nn_solution = uNN(params, jnp.array(x_eval)).reshape(-1)
 e_field_nn = electric_field_batch(params, jnp.array(x_eval)).reshape(-1)
-
+e_field_nn = e_field_nn.at[-1].set(e_field_nn[-2]) # Fixes last value
 fig, axs = plt.subplots(1, 3, figsize=(15, 5))
 
 # Plot true vs predicted potential
@@ -213,3 +228,5 @@ axs[2].set_ylim([-1e-3, 1e-3])  # Set y-axis range
 
 plt.tight_layout()
 plt.show()
+print(e_field_nn)
+print(e_field_nn.shape)
