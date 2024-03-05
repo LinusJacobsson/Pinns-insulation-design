@@ -18,28 +18,32 @@ def electric_field_single(params, x):
 
 # Your sigmoid function
 def charge_distribution(x, d = 0.01):
-    return (x - d/2)**3
+    return (x - 1)**3
+
 
 def generate_dataset(filename, noise_percent=0.0):
     df = pd.read_csv(filename, skiprows=8, header=None, names=['x-coordinate (m)', 'Electric field norm'])
     dataset = df.values
     
-    # Normalize x values
-    x_max = 0.01  # Max value in original dataset for x-coordinate
-    #dataset[:, 0] = dataset[:, 0] / x_max
+    # Normalize x values to the range [0, 1]
+    x_min, x_max = np.min(dataset[:, 0]), np.max(dataset[:, 0])
+    dataset[:, 0] = (dataset[:, 0] - x_min) / (x_max - x_min)
     
-    # Normalize Electric field values
-    E_max = np.max(dataset[:, 1])  # Assuming max electric field value for normalization
-    #dataset[:, 1] = dataset[:, 1] / E_max
+    # Normalize Electric field values to the range [0, 1]
+    E_min, E_max = np.min(dataset[:, 1]), np.max(dataset[:, 1])
+    print(f"E_min: {E_min}")
+    print(f"E_max: {E_max}")
+    dataset[:, 1] = (dataset[:, 1] - E_min) / (E_max - E_min)
     
     # Add noise if needed
     if noise_percent > 0:
-        noise = np.random.normal(0, 1, dataset.shape[0]) * noise_percent  # normalized noise
+        # Adjust the noise scale to the normalized data
+        noise_scale = noise_percent * (E_max - E_min)
+        noise = np.random.normal(0, noise_scale, dataset.shape[0])
         dataset[:, 1] += noise
     
-    print(f"normalized x-values: {dataset[:, 0]}")
-    print(f"normalized e-values: {dataset[:, 1]}")
     return dataset
+
 
 
 class MLP(nn.Module):
@@ -60,7 +64,7 @@ class MLP(nn.Module):
         for idx, layer in enumerate(self.layers):
             x = layer(x)
             if idx != len(self.layers)-1:
-                x = nn.relu(x)
+                x = nn.sigmoid(x)
         return x
     
 @jax.jit
@@ -69,13 +73,16 @@ def MSE(true, pred):
     
 
 def PINN_f(x, ufunc, params):
-    epsilon_0 = 8.85e-12
-    epsilon_r = 2
+    epsilon = 2*8.85e-12
     q = 1.6e-19
-    charge = params["params"]["charge"][0]
+    n0 = params["params"]["charge"][0]
+    scaling_factor = 1e16
+    scaled_n0 = n0*scaling_factor
+    x_unscaled = x * 100
     u_x = lambda x: jax.grad(lambda x: jnp.sum(ufunc(x)))(x)
     u_xx = lambda x: jax.grad(lambda x: jnp.sum(u_x(x)))(x)
-    return u_xx(x) + charge*charge_distribution(x)/(epsilon_0*epsilon_r)
+
+    return 1e8*(u_xx(x)*(epsilon) + q*scaled_n0*charge_distribution(x))
 
 @jax.jit
 def uNN(params, x):
@@ -103,7 +110,7 @@ def loss_fun(params, data_fitting, data_de, U_0, U_1):
 
     # Compute the first boundary condition loss for U at x = xmin
     bc_loss1 = MSE(ufunc(jnp.array([[0.0]])), U_0)
-    bc_loss2 = MSE(ufunc(jnp.array([[0.01]])), U_1)    
+    bc_loss2 = MSE(ufunc(jnp.array([[1.0]])), U_1)    
 
     # Combine losses
     total_loss =  20*bc_loss1 + 20*bc_loss2 + 1000*data_loss + mse_f
@@ -136,27 +143,35 @@ def init_process(feats, charge_guess):
 
 
 
-features = [16, 16, 1] # size of network
+features = [128, 128, 1] # size of network
 
 N_data = 100 # number of sampled points
 N_equation = 1000 
 
-CHARGE = 1_000.0 # Just nu funkar värden mellan 1e-2 till 1e0 utan ändringar 
-
 CHARGE_GUESS = 5.0
 
-U_0 = 10
+U_0 = 1/100
 U_1 = 0
-filename = 'poisson/data/Case2_Field.csv'
-potential_data = 'poisson/data/Case2_Potential.csv'
+filename = 'poisson/data/Case3_Field.csv'
+potential_data = 'poisson/data/Case3_Potential.csv'
 data_fitting = generate_dataset(filename)
 data_equation = generate_dataset(filename)  # Assuming generate_dataset can accept noise_percent=0.0 to generate without noise
-
 potential_values = generate_dataset(potential_data)
+print(potential_values)
+x_data_normalized = data_fitting[:, 0]
+e_data_normalized = data_fitting[:, 1]
 
+"""plt.plot(x_data_normalized, e_data_normalized, label='Normalized data')
+#plt.ylim([-1001, -999])
+plt.xlabel('x')
+plt.ylabel('e-field')
+plt.title('Predicted Derivative of the Solution')
+#plt.ylim([-995, -1005])
+plt.legend()
+plt.show()"""
 print(f"Starting training")
 model, params, optimizer, opt_state = init_process(features, CHARGE_GUESS)
-epochs = 76_000
+epochs = 10_000
 for epoch in range(epochs):
     opt_state, params = update(opt_state, params, data_fitting, data_equation, U_0, U_1)
     
@@ -176,9 +191,9 @@ for epoch in range(epochs):
 
         # Compute boundary condition losses
         bc_loss1 = MSE(ufunc(jnp.array([[0.0]])), U_0)
-        bc_loss2 = MSE(ufunc(jnp.array([[0.01]])), U_1)
+        bc_loss2 = MSE(ufunc(jnp.array([[1.0]])), U_1)
 
-        total_loss = mse_f + 10*bc_loss1 + 10*bc_loss2 + 100*data_loss
+        total_loss = 1e-3*mse_f + 1000*bc_loss1 + 1000*bc_loss2 + 100*data_loss
         current_charge = params["params"]["charge"][0]
 
         # Print the detailed losses
@@ -188,7 +203,7 @@ print(f"Training complete")
 current_charge = params["params"]["charge"][0]
 
 # Assuming x_eval is a numpy array of evaluation points
-x_eval = np.linspace(0, 0.01, 1000)[:, None]
+x_eval = np.linspace(0, 1, 100)[:, None]
 # Vectorize the electric_field_single function to work over batches of inputs
 electric_field_batch = jax.jit(jax.vmap(electric_field_single, in_axes=(None, 0)))
 # Compute predicted potential and electric field using your neural network
@@ -201,8 +216,8 @@ fig, axs = plt.subplots(1, 3, figsize=(15, 5))
 # Plot true vs predicted potential
 axs[0].plot(potential_values[:, 0], potential_values[:, 1], label='True Potential U(x)', color='blue')
 axs[0].plot(x_eval, nn_solution, label='Predicted Potential U(x)', linestyle='--', color='red')
-axs[0].set_xlabel('x')
-axs[0].set_ylabel('U(x)')
+axs[0].set_xlabel('x (m)')
+axs[0].set_ylabel('U(x) (V)')
 axs[0].legend()
 axs[0].set_title('Potential U(x)')
 
@@ -210,23 +225,21 @@ axs[0].set_title('Potential U(x)')
 axs[1].plot(data_fitting[:,0], data_fitting[:, 1], label='True Electric Field U\'(x)', color='blue')
 # axs[1].scatter(data_fitting[:, 0], data_fitting[:, 1], color='k', label='Training Data')  # Uncomment if you want to show training data points
 axs[1].plot(x_eval, e_field_nn, label="Predicted Electric Field E(x)", linestyle='--', color='red')
-axs[1].set_xlabel('x')
-axs[1].set_ylabel("E(x)")
+axs[1].set_xlabel('x (m)')
+axs[1].set_ylabel("E(x) (V/m)")
 axs[1].legend()
 axs[1].set_title("Electric Field E(x)")
-axs[1].set_ylim([900, 1100])  # Set y-axis range
+#axs[1].set_ylim([990, 1010])  # Set y-axis range
 
 
 # Plot the sigmoid function n(x)
 axs[2].plot(data_fitting[:, 0], 0*charge_distribution(data_fitting[:, 0]) , label='Initial charge distribution)', color='green')
 axs[2].plot(data_fitting[:, 0], current_charge*charge_distribution(data_fitting[:, 0]), linestyle='--', label='Predicted Sigmoid', color='red')
-axs[2].set_xlabel('x')
-axs[2].set_ylabel('n(x)')
+axs[2].set_xlabel('x (m)')
+axs[2].set_ylabel('n(x) (m^-3)')
 axs[2].legend()
-axs[2].set_title(f'Preicted n0: {current_charge:.2f}, True n0 = 0')
+axs[2].set_title(f'Predicted n0: {current_charge:.2e}, True n0 = 0')
 axs[2].set_ylim([-1e-3, 1e-3])  # Set y-axis range
 
 plt.tight_layout()
 plt.show()
-print(e_field_nn)
-print(e_field_nn.shape)
