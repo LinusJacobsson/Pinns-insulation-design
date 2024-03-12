@@ -16,9 +16,6 @@ def electric_field_single(params, x):
     # Return the negative of the gradient to represent the electric field
     return -dU_dx
 
-# Normalized charge_distribution
-def charge_distribution(x, d = 0.01):
-    return (x - 1/2)**3
 
 def generate_dataset(N=100, noise_percent=0.0, seed=420, charge = 100):
    
@@ -45,7 +42,7 @@ class MLP(nn.Module):
         for idx, layer in enumerate(self.layers):
             x = layer(x)
             if idx != len(self.layers)-1:
-                x = nn.relu(x)
+                x = nn.tanh(x)
         return x
     
 @jax.jit
@@ -56,15 +53,14 @@ def PINN_f(x, ufunc, params):
     epsilon = 2*8.85e-12
     q = 1.6e-19
     n0 = 1e16
-    scaling_factor = 1e9
-    scaled_n0 = n0*scaling_factor
-    x_unscaled = x * 100
+    L_c = 0.01
+    U_c = 10
+   
     u_x = lambda x: jax.grad(lambda x: jnp.sum(ufunc(x)))(x)
     u_xx = lambda x: jax.grad(lambda x: jnp.sum(u_x(x)))(x)
     normalized_constant = (1e-6*q)/(1e3*epsilon)
-    #return u_xx(x)*epsilon + q*n0*charge_distribution(x)
-    return u_xx(x)
-
+    return u_xx(x)*U_c/(L_c**2) + ((L_c**3)*q*n0*(x-0.5)**3)/epsilon
+    
 @jax.jit
 def uNN(params, x):
     u = model.apply(params, x)
@@ -85,7 +81,7 @@ def loss_fun(params, data_fitting, data_de, U_0, U_1):
     bc_loss2 = MSE(ufunc(jnp.array([[1.0]])), U_1)    
 
     # Combine losses
-    total_loss =  mse_f + 1000*bc_loss1 + 1000*bc_loss2
+    total_loss =  1e0*mse_f + 10000*bc_loss1 + 10000*bc_loss2
     return total_loss
 
 
@@ -107,14 +103,14 @@ def init_process(feats, charge_guess):
     key1, key2 = jax.random.split(jax.random.PRNGKey(420), num=2)
     dummy_in = jax.random.normal(key1, (1,))
     params = model.init(key2, dummy_in)
-    lr = optax.piecewise_constant_schedule(1e-4, {30_000: 5e-3, 75_000: 1e-3})
+    lr = optax.piecewise_constant_schedule(1e-2, {40_000: 5e-3, 500_000: 1e-3})
     optimizer = optax.adam(lr)
     opt_state = optimizer.init(params)
 
     return model, params, optimizer, opt_state
 
 
-features = [4, 4, 1] # size of network
+features = [8, 8, 1] # size of network
 
 N_data = 100 # number of sampled points
 N_equation = 100
@@ -124,12 +120,12 @@ CHARGE_GUESS = 5.0*10**4
 U_0 = 1
 U_1 = 0
 
-data = generate_dataset(N=10)
+data = generate_dataset(N=1000)
 #rint(data_fitting[:, 1])
 
 print(f"Starting training")
 model, params, optimizer, opt_state = init_process(features, CHARGE_GUESS)
-epochs = 50_000
+epochs = 500_000
 for epoch in range(epochs):
     opt_state, params = update(opt_state, params, data, data, U_0, U_1)
     
@@ -165,8 +161,8 @@ e_field_nn = electric_field_batch(params, jnp.array(x_eval)).reshape(-1)
 fig, axs = plt.subplots(1, 2, figsize=(15, 5))
 
 
-field_path = '/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case2_field.csv'
-potential_path = '/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case2_Potential.csv'
+field_path = '/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case3_field.csv'
+potential_path = '/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case3_Potential.csv'
 field_df = pd.read_csv(field_path, skiprows=7)
 x_data= field_df[['x-coordinate (m)']].values
 e_data = field_df[['Electric field norm']].values
@@ -191,7 +187,7 @@ axs[1].set_xlabel('x (m)')
 axs[1].set_ylabel("E(x) (V/m)")
 axs[1].legend()
 axs[1].set_title("Electric Field E(x)")
-#axs[1].set_ylim([999, 1001])  # Set y-axis range
+#axs[1].set_ylim([99000, 101000])  # Set y-axis range
 
 plt.tight_layout()
 plt.show()
