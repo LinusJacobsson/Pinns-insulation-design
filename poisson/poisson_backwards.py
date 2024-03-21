@@ -8,6 +8,78 @@ import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 import pandas as pd
 from jax import lax
+from dataclasses import dataclass, field, asdict
+
+import logging
+import pickle
+
+def create_schedule_description(initial_lr, milestones):
+    description = [f"Initial LR: {initial_lr}"]
+    for epoch, lr in milestones.items():
+        description.append(f"At epoch {epoch}: {lr}")
+    return ", ".join(description)
+
+
+@dataclass
+class TrainingConfig:
+    activation_function: callable  
+    activation_function_name: str
+    network_size: list
+    filenames: list
+    epochs: int
+    epoch_switch: int
+    data_points: int    
+
+    # Equation scaling      
+    U_c: float
+    L_c: float
+    n0_c: float
+    # Weights for loss function
+    weight_bc1: float
+    weight_bc2: float
+    weight_f: float
+    weight_data: float
+
+    # Learning rate scheduling
+    initial_learning_rate: float = 1e-2
+    schedule_milestones: dict = field(default_factory=lambda: {900_000: 5e-3, 1_500_000: 1e-3})
+    lr_schedule: callable = field(init=False)
+
+    def __post_init__(self):
+        self.lr_schedule = optax.piecewise_constant_schedule(self.initial_learning_rate, self.schedule_milestones)
+
+    @property
+    def schedule_description(self):
+        return create_schedule_description(self.initial_learning_rate, self.schedule_milestones)
+
+
+config = TrainingConfig(
+    activation_function = nn.sigmoid,
+    activation_function_name=nn.sigmoid.__name__,
+    network_size = [8, 8, 1],
+    filenames = ['/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case6_field.csv',
+                 '/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case6_Potential.csv',
+                 '/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case6_SpaceCharge.csv'],
+    epochs = 1_000_000,
+    epoch_switch = 300_000,
+    data_points = 100,
+    U_c = 1000,
+    L_c = 0.01,
+    n0_c = 1e18,
+    weight_bc1 = 1e4,
+    weight_bc2 = 1e4,
+    weight_f = 1,
+    weight_data = 1e2,
+)
+
+# Log everything in the start
+# Now you can directly log the schedule description from the config instance
+# Convert config to dict and log
+logging.basicConfig(filename='training_log.log', level=logging.INFO, format='%(asctime)s - %(message)s', filemode='w')
+
+config_dict = asdict(config)
+logging.info('Training Configuration: %s', config_dict)
+logging.info('Learning Rate Schedule: %s', config.schedule_description)
 
 @jax.jit
 def electric_field_single(params, x):
@@ -25,9 +97,9 @@ def plot_nn_predictions_fixed():
     # Assuming x_eval, uNN, electric_field_single, and params are predefined in your workspace
     
     # Define the paths to your CSV files
-    field_path = '/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case6_field.csv'
-    potential_path = '/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case6_Potential.csv'
-    space_charge_path = '/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case6_SpaceCharge.csv'
+    field_path = config.filenames[0]
+    potential_path = config.filenames[1]
+    space_charge_path = config.filenames[2]
     # Generate evaluation points
     x_eval = np.linspace(0, 1, 100)[:, None]
     
@@ -48,15 +120,15 @@ def plot_nn_predictions_fixed():
 
     space_charge_df = pd.read_csv(space_charge_path, skiprows=7)
     space_charge_data = space_charge_df[['Space Charge Density']].values.flatten()
-    n0_guess_plot = 1e17 * current_n0 * (x_data - 0.005)**3
-    print(space_charge_data)
+    n0_guess_plot = config.n0_c * current_n0 * (x_data - 0.005)**3
+    
     
     # Plotting
     fig, axs = plt.subplots(1, 3, figsize=(15, 5))
     
     # Plot true vs predicted potential
     axs[0].plot(x_data, potential_data, label='True Potential U(x)', linestyle='-', color='blue')
-    axs[0].plot(x_eval/100, 1e3*nn_solution, label='Predicted Potential U(x)', linestyle='--', color='red')
+    axs[0].plot(x_eval*config.L_c, (config.U_c)*nn_solution, label='Predicted Potential U(x)', linestyle='--', color='red')
     axs[0].set_xlabel('x (m)')
     axs[0].set_ylabel('U(x) (V)')
     axs[0].legend()
@@ -64,7 +136,7 @@ def plot_nn_predictions_fixed():
     
     # Plot true vs predicted electric field
     axs[1].plot(x_data, e_data, label='True Electric Field E(x)', linestyle='-', color='blue')
-    axs[1].plot(x_eval/100, 1e5*e_field_nn, label="Predicted Electric Field E(x)", linestyle='--', color='red')
+    axs[1].plot(x_eval*config.L_c, (config.U_c/config.L_c)*e_field_nn, label="Predicted Electric Field E(x)", linestyle='--', color='red')
     axs[1].set_xlabel('x (m)')
     axs[1].set_ylabel("E(x) (V/m)")
     axs[1].legend()
@@ -123,7 +195,7 @@ class MLP(nn.Module):
         for idx, layer in enumerate(self.layers):
             x = layer(x)
             if idx != len(self.layers)-1:
-                x = nn.sigmoid(x)
+                x = config.activation_function(x)
         return x
     
 @jax.jit
@@ -134,8 +206,8 @@ def MSE(true, pred):
 def PINN_f(x, ufunc, params, include_data_loss):
     epsilon = 2*8.85e-12
     q = 1.6e-19
-    L_c = 0.01
-    U_c = 1000
+    L_c = config.L_c
+    U_c = config.U_c
 
     def true_branch(_):
         return params["params"]["charge"][0]
@@ -147,7 +219,7 @@ def PINN_f(x, ufunc, params, include_data_loss):
 
     u_x = lambda x: jax.grad(lambda x: jnp.sum(ufunc(x)))(x)
     u_xx = lambda x: jax.grad(lambda x: jnp.sum(u_x(x)))(x)
-    return epsilon * u_xx(x) * U_c / ((L_c ** 5) * q * n0 * 1e17) + (x - 0.5) ** 3
+    return epsilon * u_xx(x) * U_c / ((L_c ** 5) * q * n0 * config.n0_c) + (x - 0.5) ** 3
 
 
     
@@ -161,7 +233,7 @@ def uNN(params, x):
 def loss_fun(params, data_fitting, data_equation, U_0, U_1, include_data_loss):
     ufunc = lambda x: uNN(params, x).squeeze()
     u_x = lambda x: jax.grad(lambda x: jnp.sum(ufunc(x)))(x)
-    normalized_output_field = -1e5*u_x(data_fitting[:, [0]]/0.01)
+    normalized_output_field = -(config.U_c/config.L_c)*u_x(data_fitting[:, [0]]/config.L_c)
     normalized_output_field = (normalized_output_field - E_min) / (E_max - E_min)
 
     def true_fun(_):
@@ -175,7 +247,7 @@ def loss_fun(params, data_fitting, data_equation, U_0, U_1, include_data_loss):
     mse_f = jnp.mean(PINN_f(data_equation, lambda x: uNN(params, x).squeeze(), params, include_data_loss) ** 2)
     bc_loss1 = MSE(ufunc(jnp.array([[0.0]])), U_0)
     bc_loss2 = MSE(ufunc(jnp.array([[1.0]])), U_1)
-    total_loss = 1e4 * bc_loss1 + 1e4 * bc_loss2 + 1e2 * data_loss + mse_f
+    total_loss = config.weight_bc1 * bc_loss1 + config.weight_bc2 * bc_loss2 + config.weight_data * data_loss + config.weight_f * mse_f
     
     return total_loss
 
@@ -196,32 +268,31 @@ def init_process(feats, charge_guess):
     key1, key2 = jax.random.split(jax.random.PRNGKey(420), num=2)
     dummy_in = jax.random.normal(key1, (1,))
     params = model.init(key2, dummy_in)
-    lr = optax.piecewise_constant_schedule(1e-2, {1_900_000: 5e-3, 9000_000: 1e-3})
-    optimizer = optax.adam(lr)
+    lr_schedule = config.lr_schedule 
+    optimizer = optax.adam(lr_schedule)
     opt_state = optimizer.init(params)
 
     return model, params, optimizer, opt_state
 
 
-features = [8, 8, 1] # size of network
+features = config.network_size # size of network
+N_equation = config.data_points
 
-N_data = 100 # number of sampled points
-N_equation = 100
-
-CHARGE_GUESS = 1.0
+CHARGE_GUESS = 100.0
 # Normalized U-values
 U_0 = 1
 U_1 = 0
-filename = 'poisson/data/Case6_Field.csv'
+filename = config.filenames[0]
 
-data = generate_dataset(N=100)
+data = generate_dataset(N=N_equation)
 e_field_data, E_min, E_max = load_electric_field(filename)
-x_data, e_data = e_field_data[:, [0]]/0.01, e_field_data[:, [1]]
+x_data, e_data = e_field_data[:, [0]]*config.L_c, e_field_data[:, [1]]
 print(f"For this run, we have: E_min = {E_min} and E_max = {E_max}")
 print(f"Starting training")
 model, params, optimizer, opt_state = init_process(features, CHARGE_GUESS)
-epochs = 2_000_000
-switch_epoch = 300_000  # Define when to start including data loss
+epochs = config.epochs
+switch_epoch = config.epoch_switch  # Define when to start including data loss
+
 
 best_loss = float('inf')
 best_params = None
@@ -236,7 +307,7 @@ for epoch in range(epochs):
         ufunc = lambda x: uNN(params, x).squeeze()  # Ensure this is scalar for each x
         u_x = lambda x: jax.grad(lambda x: jnp.sum(ufunc(x)))(x)
         #e_field_data = (e_field_data - E_min) / (E_max - E_min)
-        normalized_output_field = -1e5*u_x(x_data)
+        normalized_output_field = -(config.U_c/config.L_c)*u_x(x_data)
         #print(f"Output before min-max:\n {normalized_output_field}")
         normalized_output_field = (normalized_output_field - E_min) / (E_max - E_min)
         #print(f"Output after min-max:\n {normalized_output_field}")
@@ -250,9 +321,14 @@ for epoch in range(epochs):
         mse_data = MSE(normalized_output_field, e_data)
         if epoch < switch_epoch:
             mse_data = 0
-        total_loss = mse_f + 1e4*bc_loss1 + 1e4*bc_loss2 + mse_data
-        
+        total_loss = config.weight_bc1 * bc_loss1 + config.weight_bc2 * bc_loss2 + config.weight_data * mse_data + config.weight_f * mse_f
 
+        
+        # Assuming total_loss is calculated as shown in your code
+        if total_loss < best_loss:
+            best_loss = total_loss
+            best_params = params  # Assuming 'params' holds your model parameters
+            logging.info(f'New best model found at epoch {epoch} with loss {best_loss:.3e}')
         current_n0 = params["params"]["charge"][0]
 
         # Print the detailed losses
@@ -264,10 +340,30 @@ for epoch in range(epochs):
             f'Data Loss = {mse_data:.3e}, '
             f'n0 = {current_n0:.3e}')
 
+        # Log the detailed losses instead of printing
+        logging.info(f'Epoch = {epoch}, '
+                     f'Total Loss = {total_loss:.3e}, '
+                     f'DE Loss = {mse_f:.3e}, '
+                     f'BC Loss 1 = {bc_loss1:.3e}, '
+                     f'BC Loss 2 = {bc_loss2:.3e}, '
+                     f'Data Loss = {mse_data:.3e}, '
+                     f'n0 = {current_n0:.3e}')
         
         #plot_nn_predictions_fixed()
 print(f"Training complete")
+# At the end of your training script
+with open('best_model_params.pkl', 'wb') as f:
+    pickle.dump(best_params, f)
 
+logging.info('Training complete. Best model parameters saved to best_model_params.pkl')
+
+# After your training loop
+if best_params is not None:
+    with open('best_model_params.pkl', 'wb') as f:
+        pickle.dump(best_params, f)
+    logging.info(f'Training complete. Best model parameters saved to best_model_params.pkl')
+else:
+    logging.info('Training complete. No improvement found.')
 plot_nn_predictions_fixed()
 
 # SOTA Total loss = 2.917e-06 (forward)
