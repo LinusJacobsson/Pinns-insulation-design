@@ -5,7 +5,6 @@ import optax
 import flax.linen as nn
 from typing import Sequence, Callable
 import matplotlib.pyplot as plt
-from scipy.integrate import solve_ivp
 import pandas as pd
 from jax import lax
 from dataclasses import dataclass, field, asdict
@@ -42,7 +41,7 @@ class TrainingConfig:
 
     # Learning rate scheduling
     initial_learning_rate: float = 1e-2
-    schedule_milestones: dict = field(default_factory=lambda: {900_000: 5e-3, 1_500_000: 1e-3})
+    schedule_milestones: dict = field(default_factory=lambda: {40_000: 5e-3, 900_000: 1e-3})
     lr_schedule: callable = field(init=False)
 
     def __post_init__(self):
@@ -57,18 +56,18 @@ config = TrainingConfig(
     activation_function = nn.sigmoid,
     activation_function_name=nn.sigmoid.__name__,
     network_size = [8, 8, 1],
-    filenames = ['/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case6_field.csv',
-                 '/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case6_Potential.csv',
-                 '/Users/linus/Desktop/Github/Pinns-insulation-design/poisson/data/Case6_SpaceCharge.csv'],
+    filenames = ['data/Case3_field.csv',
+                 'data/Case3_Potential.csv',
+                 'data/Case3_SpaceCharge.csv'],
     epochs = 1_000_000,
     epoch_switch = 300_000,
     data_points = 100,
-    U_c = 1000,
+    U_c = 10,
     L_c = 0.01,
-    n0_c = 1e18,
+    n0_c = 1e15,
     weight_bc1 = 1e4,
     weight_bc2 = 1e4,
-    weight_f = 1,
+    weight_f = 1e3,
     weight_data = 1e2,
 )
 
@@ -112,8 +111,9 @@ def plot_nn_predictions_fixed():
     
     # Load true data from CSV files
     field_df = pd.read_csv(field_path, skiprows=7)
-    x_data = field_df[['x-coordinate (m)']].values
-    e_data = field_df[['Electric field norm']].values
+    e_field_data, E_min, E_max = load_electric_field(filename, noise_percentage = 0.1)
+    x_data = e_field_data[:, 0]
+    e_data = e_field_data[:, 1]
     
     potential_df = pd.read_csv(potential_path, skiprows=7)
     potential_data = potential_df[['Electric potential']].values
@@ -153,24 +153,44 @@ def plot_nn_predictions_fixed():
     plt.tight_layout()
     plt.show()
 
-def load_electric_field(filename, normalize = True):
+def load_electric_field(filename, normalize=True, noise_percentage=0.0):
     df = pd.read_csv(filename, skiprows=8, header=None, names=['x-coordinate (m)', 'Electric field norm'])
     dataset = df.values
-    
-    # Normalize x values to the range [0, 1]
-    #x_min, x_max = np.min(dataset[:, 0]), np.max(dataset[:, 0])
-    #dataset[:, 0] = (dataset[:, 0] - x_min) / (x_max - x_min)
-    
+    np.random.seed(1)
+
+    # Add noise to the electric field values based on the specified noise percentage
+    if noise_percentage > 0:
+        noise = np.random.randn(*dataset[:, 1].shape) * noise_percentage / 100.0 * dataset[:, 1]
+        dataset[:, 1] += noise
+
+        # Plot the electric field values after adding noise
+        plt.figure(figsize=(10, 6))
+        plt.plot(dataset[:, 0], dataset[:, 1], '-', label='Noisy Electric Field')
+        plt.xlabel('x-coordinate (m)')
+        plt.ylabel('Electric Field (V/m)')
+        plt.title('Noisy Electric Field Data')
+        plt.legend()
+        plt.show()
+
+    E_min, E_max = np.min(dataset[:, 1]), np.max(dataset[:, 1])
     if normalize:
         # Normalize Electric field values to the range [0, 1]
-        E_min, E_max = np.min(dataset[:, 1]), np.max(dataset[:, 1])
+        dataset[:, 1] = (dataset[:, 1] - E_min) / (E_max - E_min)
         print(f"E_min: {E_min}")
         print(f"E_max: {E_max}")
-        dataset[:, 1] = (dataset[:, 1] - E_min) / (E_max - E_min)
-        
+
+        # Optionally, plot the normalized electric field values
+        plt.figure(figsize=(10, 6))
+        plt.plot(dataset[:, 0], dataset[:, 1], '-', label='Normalized Electric Field')
+        plt.xlabel('x-coordinate (m)')
+        plt.ylabel('Normalized Electric Field')
+        plt.title('Normalized Electric Field Data')
+        plt.legend()
+        plt.show()
+
     return dataset, E_min, E_max
 
-def generate_dataset(N=100, noise_percent=0.0, seed=420, charge = 100):
+def generate_dataset(N=100, seed=42):
    
     np.random.seed(seed)
     xmin, xmax = 0.0, 1.0
@@ -219,7 +239,7 @@ def PINN_f(x, ufunc, params, include_data_loss):
 
     u_x = lambda x: jax.grad(lambda x: jnp.sum(ufunc(x)))(x)
     u_xx = lambda x: jax.grad(lambda x: jnp.sum(u_x(x)))(x)
-    return epsilon * u_xx(x) * U_c / ((L_c ** 5) * q * n0 * config.n0_c) + (x - 0.5) ** 3
+    return epsilon * u_xx(x) * U_c / ((L_c ** 5)*q*n0*config.n0_c) + (x - 0.5) ** 3
 
 
     
@@ -278,15 +298,18 @@ def init_process(feats, charge_guess):
 features = config.network_size # size of network
 N_equation = config.data_points
 
-CHARGE_GUESS = 100.0
+CHARGE_GUESS = 1.0
 # Normalized U-values
 U_0 = 1
 U_1 = 0
 filename = config.filenames[0]
 
 data = generate_dataset(N=N_equation)
-e_field_data, E_min, E_max = load_electric_field(filename)
-x_data, e_data = e_field_data[:, [0]]*config.L_c, e_field_data[:, [1]]
+e_field_data, E_min, E_max = load_electric_field(filename, noise_percentage = 1.0)
+x_data, e_data = e_field_data[:, [0]]/config.L_c, e_field_data[:, [1]]
+
+print(x_data)
+print(e_data)
 print(f"For this run, we have: E_min = {E_min} and E_max = {E_max}")
 print(f"Starting training")
 model, params, optimizer, opt_state = init_process(features, CHARGE_GUESS)
